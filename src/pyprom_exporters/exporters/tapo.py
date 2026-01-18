@@ -22,7 +22,6 @@ from . import run_tasks_with_retry
 from .base import BasePrometheusCollector, BasePrometheusOptions
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import Iterable
 
 
@@ -54,7 +53,7 @@ class TapoCallbacks:
 
 
 @dataclass
-class TapoDiscoveryOptions:
+class TapoDiscoveryOptions:  # pylint: disable=too-many-instance-attributes
     """Options for discovering Tapo devices on the network.
 
     Mimincs the ones from python-kasa package.
@@ -227,7 +226,7 @@ class TapoDeviceFamilyMetrics:
 
 
 @dataclass
-class TapoExporterOptions:
+class TapoExporterOptions:  # pylint: disable=too-many-instance-attributes
     """Options for the Tapo exporter."""
 
     devices: list[str] = field(default_factory=list)
@@ -267,6 +266,7 @@ class TapoExporterOptions:
             self.per_device_family_metrics = TapoDeviceFamilyMetrics()
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass
 class TapoPlugDeviceDump:
     """Model for dumping Tapo Plug device information."""
@@ -305,7 +305,7 @@ class TapoDeviceUpdateResult:
     auth_failed: bool | None = None
 
 
-class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
+class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disable=too-many-instance-attributes
     """Exporter for Tapo Power Plug metrics."""
 
     def __init__(
@@ -374,12 +374,14 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 timeout=options.timeout,
             )
 
-        fs_log.debug(f"Discovered Tapo devices automatically: {len(discovered)}")
+        fs_log.debug("Discovered Tapo devices automatically: %s", len(discovered))
 
         for candidate_device in self.options.devices:
             if candidate_device not in discovered:
-                msg = f"Device {candidate_device} not found during discovery -- attempting to discover it."
-                fs_log.warning(msg)
+                fs_log.warning(
+                    "Device %s not found during discovery -- attempting to discover it.",
+                    candidate_device,
+                )
                 discovered_device = await Discover.discover_single(
                     credentials=options.credentials,
                     host=candidate_device,
@@ -392,18 +394,15 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                     on_unsupported=self.callbacks.on_unsupported,
                 )
                 if discovered_device is not None:
-                    msg = f"Discovered device: {candidate_device} at {discovered_device.host}"
-                    fs_log.info(msg)
+                    fs_log.info("Discovered device: %s at %s", candidate_device, discovered_device.host)
                     discovered[candidate_device] = discovered_device
             else:
-                msg = f"Device: {candidate_device} already discovered"
-                fs_log.info(msg)
+                fs_log.info("Device: %s already discovered", candidate_device)
 
         self.discovered_devices = discovered
         self._auth_failed_devices.intersection_update(self.discovered_devices.keys())
 
-        msg = f"Discovered {len(discovered)} Tapo devices."
-        fs_log.info(msg)
+        fs_log.info("Discovered %s Tapo devices.", len(discovered))
 
         # use a predefined value if missing
         refresh_interval = (
@@ -453,7 +452,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             while True:
                 try:
                     await self.update_and_collect()
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001  # pylint: disable=broad-exception-caught
                     fs_log.exception("Background update failed.")
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -506,19 +505,26 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         last_update = getattr(device, "_last_update_time", None)
         if last_update is None:
             # if the device does not have a last update time, set it to 0
-            fs_log.debug(f"Device {device.alias} at {device.host} does not have a last update time, setting it to 0.")
+            fs_log.debug(
+                "Device %s at %s does not have a last update time, setting it to 0.",
+                device.alias,
+                device.host,
+            )
             last_update = 0.0
             force_update = True
 
         current_time = time.monotonic()
 
         if not force_update and (current_time - last_update) < refresh_interval:
-            msg = (
-                f"Device {device.alias} at {device.host} was updated recently, skipping update. "
-                f"Last update time: {last_update}, current time: {current_time}, "
-                f"refresh interval: {refresh_interval}"
+            fs_log.debug(
+                "Device %s at %s was updated recently, skipping update. "
+                "Last update time: %s, current time: %s, refresh interval: %s",
+                device.alias,
+                device.host,
+                last_update,
+                current_time,
+                refresh_interval,
             )
-            fs_log.debug(msg)
             return TapoDeviceUpdateResult(host=device.host, auth_failed=None)
 
         try:
@@ -531,8 +537,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 fs_log.error("Authentication failed for device %s: %s", device.host, exc)
                 return TapoDeviceUpdateResult(host=device.host, auth_failed=True)
             raise
-        msg = f"Updated device: {device.alias} at {device.host}"
-        fs_log.debug(msg)
+        fs_log.debug("Updated device: %s at %s", device.alias, device.host)
         return TapoDeviceUpdateResult(host=device.host, auth_failed=False)
 
     @staticmethod
@@ -553,7 +558,10 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         # only export the device if it has current consumption feature
         features = device.features or {}
         if features.get("current_consumption") is None:
-            fs_log.debug(f"Device {device.host} does not have current consumption feature, skipping export.")
+            fs_log.debug(
+                "Device %s does not have current consumption feature, skipping export.",
+                device.host,
+            )
             return None
 
         def _get_safe_float_value(feature_name: str) -> float | None:
@@ -621,7 +629,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 "tapo_discovered_devices",
                 "Number of discovered Tapo devices",
                 value=len(self.discovered_devices),
-            )
+            ),
         ]
 
         for device in self.discovered_devices.values():
@@ -679,5 +687,4 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         """
         with self._metrics_lock:
             metrics = list(self._latest_metrics)
-        for metric in metrics:
-            yield metric
+        yield from metrics

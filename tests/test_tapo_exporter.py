@@ -3,6 +3,8 @@
 This module exercises discovery behavior, metric collection output, and retry handling using fake Tapo devices.
 """
 
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 
@@ -16,12 +18,14 @@ EXPECTED_RETRY_ATTEMPTS = 3
 
 
 def test_collect_from_device_requires_current_consumption() -> None:
+    """Ensure devices without consumption data are skipped."""
     device = FakeDevice("10.0.0.1", "plug-1", features={"rssi": SimpleNamespace(value=-40.0)})
     dump = TapoPowerPlugPrometheusExporter.collect_from_plug_device(device)
     assert dump is None  # noqa: S101
 
 
 def test_discover_adds_missing_devices(monkeypatch) -> None:
+    """Verify discovery adds explicit devices when missing from scan results."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -51,6 +55,7 @@ def test_discover_adds_missing_devices(monkeypatch) -> None:
 
 
 def test_collect_emits_expected_metrics() -> None:
+    """Check that cached metrics are emitted with expected labels."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -76,6 +81,7 @@ def test_collect_emits_expected_metrics() -> None:
 
 
 def test_update_uses_retry_runner(monkeypatch) -> None:
+    """Ensure update calls the retry runner and updates devices."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -106,6 +112,7 @@ def test_update_uses_retry_runner(monkeypatch) -> None:
 
 
 def test_run_tasks_with_retry_retries() -> None:
+    """Verify retry logic eventually succeeds for transient failures."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -118,7 +125,8 @@ def test_run_tasks_with_retry_retries() -> None:
                 raise ValueError(msg)
             return "ok"
 
-        factory = lambda: flaky()
+        def factory():
+            return flaky()
 
         result = loop.run_until_complete(
             run_tasks_with_retry(
@@ -138,6 +146,7 @@ def test_run_tasks_with_retry_retries() -> None:
 
 
 def test_background_update_populates_cache(monkeypatch) -> None:
+    """Ensure the first update pass populates the cached metrics."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

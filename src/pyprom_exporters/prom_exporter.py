@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, cast
 
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
     from types import FrameType
 
     from pyprom_exporters.exporters.base import BasePrometheusCollector
-from pathlib import Path
 
 logging.basicConfig(level=logging.DEBUG)
 fs_log = logging.getLogger()
@@ -46,8 +46,8 @@ def load_config(config_path: str) -> DictConfig | ListConfig:
     """
     try:
         config = OmegaConf.load(config_path)
-    except Exception as e:  # noqa: BLE001
-        fs_log.exception(f"Failed to load configuration from {config_path}: {e}")
+    except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+        fs_log.exception("Failed to load configuration from %s: %s", config_path, e)
         sys.exit(1)
     else:
         return config
@@ -207,10 +207,10 @@ def write_config(
         else:
             current_container = OmegaConf.to_container(config, resolve=True)
             yaml_content = OmegaConf.to_yaml(_scrub_sensitive_config(current_container))
-        config_p.write_text(yaml_content)
-        fs_log.info(f"Successfully wrote merged configuration to {config_path}")
-    except Exception as e:  # noqa: BLE001
-        fs_log.exception(f"Failed to write configuration to {config_path}: {e}")
+        config_p.write_text(yaml_content, encoding="utf-8")
+        fs_log.info("Successfully wrote merged configuration to %s", config_path)
+    except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+        fs_log.exception("Failed to write configuration to %s: %s", config_path, e)
         sys.exit(1)
 
 
@@ -221,11 +221,11 @@ def cleanup_func(
 ) -> None:
     """Cleanup function to be called on exit."""
     for collector in collectors:
-        fs_log.info(f"Cleaning up collector: {collector.__class__.__name__}")
+        fs_log.info("Cleaning up collector: %s", collector.__class__.__name__)
         future = asyncio.run_coroutine_threadsafe(collector.cleanup(), asyncio_loop)
         try:
             future.result()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
             fs_log.error("Failed during cleanup: %s", exc)
     # closing the asyncio loop
     fs_log.info("Stopping the asyncio event loop...")
@@ -246,8 +246,8 @@ def graceful_exit_handler(
     """Set up signal handlers for graceful shutdown."""
     fs_log.info("Setting up signal handlers for graceful shutdown...")
 
-    def _signal_handler(signum: int, frame: FrameType | None) -> None:  # noqa: ARG001
-        fs_log.info(f"Received signal {signal.Signals(signum).name} ({signum}), shutting down...")
+    def _signal_handler(signum: int, _frame: FrameType | None) -> None:
+        fs_log.info("Received signal %s (%s), shutting down...", signal.Signals(signum).name, signum)
         cleanup_func(collectors, asyncio_loop, loop_thread)
         fs_log.info("Signaling termination...")
         sig_event.set()
@@ -328,7 +328,7 @@ def main() -> None:
         register_exporters(prom_port=app_config.prometheus_port, collectors=exporter_list)
         graceful_exit_handler(termination_sig, exporter_list, exporter_loop, loop_thread)
         fs_log.info("Monitoring... waiting for a signal in case of termination...")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
         fs_log.error("An unexpected error occurred execution, details: %s", e)
         cleanup_func(exporter_list, exporter_loop, loop_thread)
         sys.exit(1)

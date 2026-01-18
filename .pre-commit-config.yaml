@@ -11,9 +11,9 @@ repos:
       - id: check-case-conflict
       # check all json file syntax
       - id: check-json
+        exclude: ^\.vscode/
       # check all yaml file syntax
       - id: check-yaml
-        exclude: ^eks_deploy/helm/templates/
       # check all toml file syntax
       - id: check-toml
       # ensure graceful EoL in each file.
@@ -34,14 +34,18 @@ repos:
       # check json format and make it pretty
       - id: pretty-format-json
         args: ["--autofix"]
+        exclude: ^\.vscode/
   - repo: https://github.com/jumanjihouse/pre-commit-hooks
     rev: 3.0.0  # or specific git tag
     hooks:
       - id: fasterer
       - id: git-check  # Configure in .gitattributes
       - id: markdownlint # Configure in .mdlrc
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.12.0-2
+    hooks:
       - id: shfmt
-        args: [ -i 2 ]
+        args: ["-i", "4"]
   # add bandit
   - repo: https://github.com/Lucas-C/pre-commit-hooks-bandit
     rev: 'v1.0.6'
@@ -64,19 +68,19 @@ repos:
       - id: mypy
         args: ["--show-error-codes", "--ignore-missing-imports"]
         additional_dependencies: [types-requests]
-        # exclude: |
-        #   (?x)(
-        #       ^(generated/|(scout|common|whoami)/migrations/)
-        #   )
   # use local repository hooks so we can discover libraries.
   - repo: local
     hooks:
     - id: pylint
       name: pylint
-      # exclude: |
-      #   (?x)(
-      #       ^generated/
-      #   )
       entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
       language: python
       types: [python]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.14.13
+    hooks:
+      # Run the linter.
+      - id: ruff-check
+      # Run the formatter.
+      - id: ruff-format
