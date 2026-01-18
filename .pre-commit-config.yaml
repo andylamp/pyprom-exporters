@@ -1,0 +1,82 @@
+repos:
+  # the default pre-commit hooks, we use most of them
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 'v6.0.0'
+    hooks:
+      # check if symlinks point to nothing
+      - id: check-symlinks
+      # forbid files which have a UTF-8 byte-order marker
+      - id: fix-byte-order-marker
+      # for filenames that would conflict in case-insensitive fs (e.g. HFS+, FAT)
+      - id: check-case-conflict
+      # check all json file syntax
+      - id: check-json
+      # check all yaml file syntax
+      - id: check-yaml
+        exclude: ^eks_deploy/helm/templates/
+      # check all toml file syntax
+      - id: check-toml
+      # ensure graceful EoL in each file.
+      - id: end-of-file-fixer
+      # ensure no trailing whitespaces exist
+      - id: trailing-whitespace
+      # fixed mixed line endings
+      - id: mixed-line-ending
+      # check if the code is it valid Python
+      - id: check-ast
+      # Check for debugger imports and py37+ breakpoint() calls
+      # in python source.
+      - id: debug-statements
+      # this detects private keys and avoids them being committed
+      - id: detect-private-key
+      # sort file contents
+      - id: file-contents-sorter
+      # check json format and make it pretty
+      - id: pretty-format-json
+        args: ["--autofix"]
+  - repo: https://github.com/jumanjihouse/pre-commit-hooks
+    rev: 3.0.0  # or specific git tag
+    hooks:
+      - id: fasterer
+      - id: git-check  # Configure in .gitattributes
+      - id: markdownlint # Configure in .mdlrc
+      - id: shfmt
+        args: [ -i 2 ]
+  # add bandit
+  - repo: https://github.com/Lucas-C/pre-commit-hooks-bandit
+    rev: 'v1.0.6'
+    hooks:
+      - id: python-bandit-vulnerability-check
+        args: [--exclude ./.venv]
+  # add ruff
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.13
+    hooks:
+      # Run the linter.
+      - id: ruff-check
+        args: [ --fix ]
+      # Run the formatter.
+      - id: ruff-format
+  # add mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 'v1.19.1'
+    hooks:
+      - id: mypy
+        args: ["--show-error-codes", "--ignore-missing-imports"]
+        additional_dependencies: [types-requests]
+        # exclude: |
+        #   (?x)(
+        #       ^(generated/|(scout|common|whoami)/migrations/)
+        #   )
+  # use local repository hooks so we can discover libraries.
+  - repo: local
+    hooks:
+    - id: pylint
+      name: pylint
+      # exclude: |
+      #   (?x)(
+      #       ^generated/
+      #   )
+      entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
+      language: python
+      types: [python]
