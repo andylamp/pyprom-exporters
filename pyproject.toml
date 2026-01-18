@@ -19,7 +19,6 @@ dev = [
 tapo = ["python-kasa>=0.10.2"]
 
 [project.scripts]
-# kasa-probe = "pyprom_exporters.kasa_probe:main"
 prom-exporter = "pyprom_exporters.prom_exporter:main"
 
 [build-system]
