@@ -1,2 +1,11 @@
 .env
 config.yaml
+tests/
+.github/
+.pre-commit-config.yaml
+.vscode/
+.ruff_cache
+.mdlrc
+mdl_style.rb
+*.md
+*.sh
