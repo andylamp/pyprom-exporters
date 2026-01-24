@@ -75,13 +75,13 @@ discovery and metric collection, exposed via `prometheus_client`.
 - `ruff` with line length 119, Black-like formatting, isort rules.
 - `pylint` enabled with the same max line length.
 - `mypy` checks untyped defs.
-- `markdownlint` uses `.mdlcrc` with rules defined in `mdl_style.rb`.
+- `markdownlint` uses `.markdownlint-cli2.jsonc` for shared VS Code + CLI configuration.
 - Documentation style: numpy-style docstrings.
 
 ## Doc linting
 
 All documentation in this repository should follow the Markdown style guide enforced by
-`markdownlint`. The rules live in `mdl_style.rb` and are loaded via `.mdlcrc`.
+`markdownlint`. The rules live in `.markdownlint-cli2.jsonc`.
 
 ## Testing
 

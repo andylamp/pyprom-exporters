@@ -58,7 +58,7 @@ def test_tapo_exporter_options_default_subconfigs() -> None:
     assert options.supported_device_families == {tapo_module.TapoDeviceFamily.PLUG: True}  # noqa: S101
     assert options.per_device_family_metrics is not None  # noqa: S101
     assert set(options.per_device_family_metrics.plug.keys()) == set(  # noqa: S101
-        tapo_module.DEFAULT_PER_PLUG_METRICS.keys()
+        tapo_module.DEFAULT_PER_PLUG_METRICS.keys(),
     )
 
 

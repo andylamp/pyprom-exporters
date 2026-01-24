@@ -618,7 +618,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
         await self.disconnect()
         fs_log.debug("Cleanup complete.")
 
-    def _build_metrics(self) -> list[Metric]:
+    def _build_metrics(self) -> list[Metric]:  # noqa: C901
         """Build Prometheus metrics from the latest device state."""
         if not self.discovered_devices:
             fs_log.warning("No discovered devices to collect metrics from.")

@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - "release"
+  workflow_dispatch:
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.read-version.outputs.version }}
+      tag: ${{ steps.read-version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Read version
+        id: read-version
+        run: |
+          version=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Create tag
+        run: |
+          git fetch --tags
+          if git rev-parse "${{ steps.read-version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag already exists; failing release."
+            exit 1
+          fi
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag "${{ steps.read-version.outputs.tag }}"
+          git push origin "${{ steps.read-version.outputs.tag }}"
+
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - prepare-release
+      - sign-artifacts
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-dist
+          path: dist
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: ${{ needs.prepare-release.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*
+
+  build-artifacts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: prepare-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Sync dependencies
+        run: uv sync --frozen --no-dev --group tapo
+      - name: Build
+        run: uv build
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  sign-artifacts:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    needs: build-artifacts
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Sign artifacts
+        uses: sigstore/gh-action-sigstore-python@v3.2.0
+        with:
+          inputs: dist/*.whl dist/*.tar.gz
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-dist
+          path: dist
+
+  publish-pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    needs: build-artifacts
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  publish-docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: prepare-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}
+            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:latest
+            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}-amd64
+            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}-arm64

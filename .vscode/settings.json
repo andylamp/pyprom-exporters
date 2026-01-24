@@ -13,6 +13,10 @@
       "source.organizeImports": "explicit"
     }
   },
+  "[markdown]": {
+    "editor.defaultFormatter": "DavidAnson.vscode-markdownlint",
+    "editor.formatOnSave": true
+  },
   "[json]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
