@@ -86,7 +86,7 @@ jobs:
       - name: Build
         run: uv build
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist
@@ -108,7 +108,7 @@ jobs:
         with:
           inputs: dist/*.whl dist/*.tar.gz
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: signed-dist
           path: dist
