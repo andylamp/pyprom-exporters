@@ -57,7 +57,7 @@ jobs:
       - sign-artifacts
     steps:
       - name: Download signed artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: signed-dist
           path: dist
@@ -99,7 +99,7 @@ jobs:
     needs: build-artifacts
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist
@@ -121,7 +121,7 @@ jobs:
     needs: build-artifacts
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist
