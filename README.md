@@ -1,6 +1,6 @@
-# pyprom-exporters
+# Python Prometheus Exporters for IoT Devices
 
-`pyprom-exporters` is a small Python package that exposes Prometheus metrics for IoT / smart-home
+Python Prometheus Exporters (`pyprom-exporters`) is a small Python package that exposes Prometheus metrics for IoT / smart-home
 devices.
 
 The current concrete exporter targets TP-Link Tapo smart plugs via `python-kasa`.
