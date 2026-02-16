@@ -26,8 +26,43 @@ if TYPE_CHECKING:
 
     from pyprom_exporters.exporters.base import BasePrometheusCollector
 
-logging.basicConfig(level=logging.DEBUG)
-fs_log = logging.getLogger()
+fs_log = logging.getLogger(__name__)
+
+
+def _resolve_log_level(value: str | None) -> tuple[int, bool]:
+    """Resolve a logging level name/number into a numeric level.
+
+    Parameters
+    ----------
+    value : str | None
+        Level name (e.g., INFO) or integer as a string (e.g., 20).
+
+    Returns
+    -------
+    tuple[int, bool]
+        Numeric level, and whether the input was valid.
+
+    """
+    if value is None:
+        return logging.INFO, True
+    raw = value.strip()
+    if not raw:
+        return logging.INFO, True
+    if raw.isdigit():
+        return int(raw), True
+    normalized = raw.upper()
+    resolved = getattr(logging, normalized, None)
+    if isinstance(resolved, int):
+        return resolved, True
+    return logging.INFO, False
+
+
+def configure_logging(level: str | None, *, force: bool = False) -> None:
+    """Configure root logging for the exporter runtime."""
+    resolved_level, valid = _resolve_log_level(level)
+    logging.basicConfig(level=resolved_level, force=force)
+    if not valid:
+        fs_log.warning("Invalid log level %r; falling back to INFO.", level)
 
 
 def load_config(config_path: str) -> DictConfig | ListConfig:
@@ -90,6 +125,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tapo-username", default=None, help="Tapo device username override.")
     parser.add_argument("--tapo-password", default=None, help="Tapo device password override.")
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Python logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    )
     return parser.parse_args()
 
 
@@ -106,6 +146,10 @@ def _split_devices_from_string(value: str) -> list[str]:
 
 def apply_env_overrides(app_config: PromExporterConfig) -> None:
     """Apply environment variable overrides to the application configuration."""
+    env_log_level = os.getenv("PYPROM_EXPORTERS_LOG_LEVEL") or os.getenv("LOG_LEVEL")
+    if env_log_level:
+        app_config.log_level = env_log_level
+
     env_port = os.getenv("PROMETHEUS_PORT")
     if env_port:
         try:
@@ -131,6 +175,9 @@ def apply_env_overrides(app_config: PromExporterConfig) -> None:
 
 def apply_cli_overrides(app_config: PromExporterConfig, args: argparse.Namespace) -> None:
     """Apply CLI overrides to the application configuration."""
+    if getattr(args, "log_level", None) is not None:
+        app_config.log_level = args.log_level
+
     if args.prometheus_port is not None:
         app_config.prometheus_port = args.prometheus_port
 
@@ -301,13 +348,23 @@ def _run_event_loop(asyncio_loop: asyncio.AbstractEventLoop) -> None:
 
 def main() -> None:
     """Primary entry point for the Prometheus exporter."""
+    args = parse_args()
+
+    early_log_level = (
+        getattr(args, "log_level", None)
+        or os.getenv("PYPROM_EXPORTERS_LOG_LEVEL")
+        or os.getenv("LOG_LEVEL")
+        or PromExporterConfig().log_level
+    )
+    configure_logging(early_log_level, force=True)
+
     config_path = PromExporterConfig().config_file
     app_config, cfg, config_exists = load_app_config(config_path)
     if not config_exists:
         write_config(cfg, config_path, minimal=app_config.write_non_default_config)
     apply_env_overrides(app_config)
-    args = parse_args()
     apply_cli_overrides(app_config, args)
+    configure_logging(app_config.log_level, force=True)
     cfg = OmegaConf.structured(app_config)
     if config_exists:
         write_config(cfg, config_path, minimal=app_config.write_non_default_config)

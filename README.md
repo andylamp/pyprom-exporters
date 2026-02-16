@@ -1,6 +1,7 @@
 # Python Prometheus Exporters for IoT Devices
 
-Python Prometheus Exporters (`pyprom-exporters`) is a small Python package that exposes Prometheus metrics for IoT / smart-home
+Python Prometheus Exporters (`pyprom-exporters`) is a small Python package that exposes Prometheus
+metrics for IoT / smart-home
 devices.
 
 The current concrete exporter targets TP-Link Tapo smart plugs via `python-kasa`.
@@ -16,7 +17,17 @@ The current concrete exporter targets TP-Link Tapo smart plugs via `python-kasa`
 - `prom-exporter` starts an asyncio event loop on a background thread.
 - The Tapo exporter runs discovery, performs an initial update pass, then starts periodic background
   updates.
-- Prometheus scrapes only read cached metric objects; device I/O happens in the background.
+- Prometheus scrapes call the exporter `collect()` method, which returns cached metric objects.
+  Device I/O happens in the background.
+
+This means the exporter updates devices on its own schedule, not on Prometheus' scrape schedule.
+To reduce device/network traffic, set `exporters.tapo.prometheus_options.refresh_interval` to match
+your Prometheus scrape interval (or higher).
+
+The tradeoff is intentional:
+
+- Background polling keeps scrape latency low and predictable.
+- Scrapes do not block on device updates and are resilient to transient device timeouts.
 
 ## Project Layout
 
@@ -69,6 +80,12 @@ uv run prom-exporter \
   --tapo-plug-devices 10.10.2.100,10.10.2.101
 ```
 
+You can also reduce log verbosity:
+
+```sh
+uv run prom-exporter --log-level WARNING
+```
+
 1. Scrape metrics:
 
 - `http://localhost:8090/metrics`
@@ -78,6 +95,7 @@ uv run prom-exporter \
 The runtime supports a few convenience overrides:
 
 - Precedence: CLI flags override env vars; env vars override `config.yaml`.
+- `PYPROM_EXPORTERS_LOG_LEVEL` (or `LOG_LEVEL`): overrides `log_level`.
 - `PROMETHEUS_PORT`: overrides `prometheus_port`.
 - `TAPO_PLUG_DEVICES`: overrides `exporters.tapo.devices` (space or comma-separated).
 - `TAPO_USERNAME` / `TAPO_PASSWORD`: overrides credentials directly.
@@ -94,6 +112,7 @@ The runtime supports a few convenience overrides:
 
 Important fields:
 
+- `log_level`: root logging level for the process.
 - `prometheus_port`: exporter listen port.
 - `exporters.tapo.devices`: list of device IPs to monitor (used in addition to discovery).
 - `exporters.tapo.prometheus_options.refresh_interval`: background update interval (seconds) and
