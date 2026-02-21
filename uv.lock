@@ -830,11 +830,12 @@ wheels = [
 
 [[package]]
 name = "pyprom-exporters"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "omegaconf" },
     { name = "prometheus-client" },
+    { name = "python-kasa" },
 ]
 
 [package.dev-dependencies]
@@ -842,17 +843,14 @@ dev = [
     { name = "pre-commit" },
     { name = "pylint" },
     { name = "pytest" },
-    { name = "python-kasa" },
     { name = "ruff" },
-]
-tapo = [
-    { name = "python-kasa" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
+    { name = "python-kasa", specifier = ">=0.10.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -860,10 +858,8 @@ dev = [
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pylint", specifier = ">=3.3.3" },
     { name = "pytest", specifier = ">=8.4.0" },
-    { name = "python-kasa", specifier = ">=0.10.2" },
     { name = "ruff", specifier = ">=0.11.11" },
 ]
-tapo = [{ name = "python-kasa", specifier = ">=0.10.2" }]
 
 [[package]]
 name = "pytest"

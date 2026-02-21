@@ -6,11 +6,10 @@ readme = "README.md"
 authors = [{ name = "Andreas A. Grammenos", email = "ag926@cl.cam.ac.uk" }]
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
-dependencies = ["prometheus-client>=0.20.0", "omegaconf>=2.3.0"]
+dependencies = ["prometheus-client>=0.20.0", "omegaconf>=2.3.0", "python-kasa>=0.10.2"]
 
 [dependency-groups]
-dev = ["ruff>=0.11.11", "pytest>=8.4.0", "pre-commit>=4.2.0", "pylint>=3.3.3", "python-kasa>=0.10.2"]
-tapo = ["python-kasa>=0.10.2"]
+dev = ["ruff>=0.11.11", "pytest>=8.4.0", "pre-commit>=4.2.0", "pylint>=3.3.3"]
 
 [project.scripts]
 prom-exporter = "pyprom_exporters.prom_exporter:main"

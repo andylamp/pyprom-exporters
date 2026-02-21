@@ -22,7 +22,7 @@ ENV PROMETHEUS_PORT=${PROMETHEUS_PORT}
 ENV TAPO_PLUG_DEVICES=${TAPO_PLUG_DEVICES}
 
 # Install dependencies
-RUN uv sync --frozen --no-dev --group tapo
+RUN uv sync --frozen --no-dev
 
 # Expose Prometheus port
 EXPOSE ${PROMETHEUS_PORT}
