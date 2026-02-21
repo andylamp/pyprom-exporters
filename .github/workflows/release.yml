@@ -7,10 +7,41 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Sync dependencies
+        run: uv sync --frozen --dev
+      - name: Pre-commit checks
+        run: uv run pre-commit run --all-files
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Sync dependencies
+        run: uv sync --frozen --dev
+      - name: Pytest
+        run: uv run pytest
+
   prepare-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    needs:
+      - lint
+      - test
     outputs:
       version: ${{ steps.read-version.outputs.version }}
       tag: ${{ steps.read-version.outputs.tag }}
@@ -36,23 +67,38 @@ jobs:
           )
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  create-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - prepare-release
+      - build-artifacts
+      - publish-docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Create tag
         run: |
           git fetch --tags
-          if git rev-parse "${{ steps.read-version.outputs.tag }}" >/dev/null 2>&1; then
+          if git rev-parse "${{ needs.prepare-release.outputs.tag }}" >/dev/null 2>&1; then
             echo "Tag already exists; failing release."
             exit 1
           fi
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git tag "${{ steps.read-version.outputs.tag }}"
-          git push origin "${{ steps.read-version.outputs.tag }}"
+          git tag "${{ needs.prepare-release.outputs.tag }}"
+          git push origin "${{ needs.prepare-release.outputs.tag }}"
 
   create-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     needs:
+      - create-tag
       - prepare-release
       - sign-artifacts
     steps:
