@@ -50,17 +50,10 @@ This repo is set up to use `uv` and a checked-in `uv.lock`.
 
 ```sh
 # Development (includes the dev dependency group by default)
-uv sync --frozen --group tapo
+uv sync --frozen
 
 # Minimal runtime environment
-uv sync --frozen --no-dev --group tapo
-```
-
-If you use `pip`, you must also install `python-kasa` (it is not part of the base dependencies).
-
-```sh
-pip install .
-pip install python-kasa
+uv sync --frozen --no-dev
 ```
 
 ## Running
