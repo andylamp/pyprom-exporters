@@ -1,7 +1,7 @@
 [project]
 name = "pyprom-exporters"
-version = "0.0.1"
-description = "."
+version = "0.0.2"
+description = "Prometheus exporters for IoT and smart-home devices, including TP-Link Tapo plugs."
 readme = "README.md"
 authors = [{ name = "Andreas A. Grammenos", email = "ag926@cl.cam.ac.uk" }]
 requires-python = ">=3.11"
@@ -9,13 +9,7 @@ license = { text = "Apache-2.0" }
 dependencies = ["prometheus-client>=0.20.0", "omegaconf>=2.3.0"]
 
 [dependency-groups]
-dev = [
-    "ruff>=0.11.11",
-    "pytest>=8.4.0",
-    "pre-commit>=4.2.0",
-    "pylint>=3.3.3",
-    "python-kasa>=0.10.2",
-]
+dev = ["ruff>=0.11.11", "pytest>=8.4.0", "pre-commit>=4.2.0", "pylint>=3.3.3", "python-kasa>=0.10.2"]
 tapo = ["python-kasa>=0.10.2"]
 
 [project.scripts]
@@ -24,7 +18,6 @@ prom-exporter = "pyprom_exporters.prom_exporter:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -71,7 +64,6 @@ select = ["F", "I"]
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
-
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
