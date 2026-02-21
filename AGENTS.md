@@ -83,9 +83,12 @@ discovery and metric collection, exposed via `prometheus_client`.
 All documentation in this repository should follow the Markdown style guide enforced by
 `markdownlint`. The rules live in `.markdownlint-cli2.jsonc`.
 
-## Testing
+## Mantatory steps for changes
 
-When crucial functionality is changed or tests are added, run `pytest` to ensure the suite passes.
+When making changes, please ensure the following:
+
+- Ensure that `pytest` is executed and it passes.
+- Ensure that `uv run pre-commit run --all-files` is executed and it passes.
 
 ## Utilities and entry points
 

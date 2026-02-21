@@ -8,11 +8,23 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 dependencies = ["prometheus-client>=0.20.0", "omegaconf>=2.3.0", "python-kasa>=0.10.2"]
 
+[project.optional-dependencies]
+docs = ["sphinx>=8.0.0", "myst-parser>=4.0.0", "furo>=2024.8.0"]
+
 [dependency-groups]
-dev = ["ruff>=0.11.11", "pytest>=8.4.0", "pre-commit>=4.2.0", "pylint>=3.3.3"]
+dev = [
+    "ruff>=0.11.11",
+    "pytest>=8.4.0",
+    "pre-commit>=4.2.0",
+    "pylint>=3.3.3",
+    "sphinx>=8.0.0",
+    "myst-parser>=4.0.0",
+    "furo>=2024.8.0",
+]
 
 [project.scripts]
 prom-exporter = "pyprom_exporters.prom_exporter:main"
+docs = "pyprom_exporters.docs_cli:main"
 
 [build-system]
 requires = ["hatchling"]

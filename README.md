@@ -192,6 +192,18 @@ uv run ruff format .
 uv run pre-commit run --all-files
 ```
 
+## Documentation
+
+Documentation is generated with Sphinx using Markdown (`MyST`) sources in `docs/`.
+
+```sh
+# Build HTML docs locally with uv
+uv run docs
+
+# Build HTML docs locally with make
+make docs
+```
+
 ## License
 
 Apache-2.0 (see [LICENSE](LICENSE)).

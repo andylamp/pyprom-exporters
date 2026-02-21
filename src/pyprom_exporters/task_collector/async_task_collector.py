@@ -49,10 +49,10 @@ async def run_tasks_with_retry(  # noqa: PLR0913, UP047
 
     Parameters
     ----------
-    factories : Iterable[Callable[[], &quot;asyncio.Future[T]&quot;]]
+    factories : Iterable[Callable[[], Awaitable[T]]]
         A list of coroutine factories to run concurrently.
     concurrency : int | None, optional
-        The number of, by default None
+        Maximum number of concurrent tasks. If None, all tasks run concurrently.
     attempts : int, optional
         Max attempts, by default 3
     delay : float, optional
