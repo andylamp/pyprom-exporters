@@ -1,7 +1,7 @@
 repos:
   # the default pre-commit hooks, we use most of them
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: 'v6.0.0'
+    rev: "v6.0.0"
     hooks:
       # check if symlinks point to nothing
       - id: check-symlinks
@@ -35,15 +35,20 @@ repos:
       - id: pretty-format-json
         args: ["--autofix"]
         exclude: ^\.vscode/
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
   - repo: https://github.com/jumanjihouse/pre-commit-hooks
-    rev: 3.0.0  # or specific git tag
+    rev: 3.0.0 # or specific git tag
     hooks:
       - id: fasterer
-      - id: git-check  # Configure in .gitattributes
+      - id: git-check # Configure in .gitattributes
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: v0.21.0
     hooks:
-      - id: markdownlint-cli2  # Configure in .markdownlint-cli2.jsonc
+      - id: markdownlint-cli2 # Configure in .markdownlint-cli2.jsonc
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.12.0-2
     hooks:
@@ -51,7 +56,7 @@ repos:
         args: ["-i", "4"]
   # add bandit
   - repo: https://github.com/Lucas-C/pre-commit-hooks-bandit
-    rev: 'v1.0.6'
+    rev: "v1.0.6"
     hooks:
       - id: python-bandit-vulnerability-check
         args: [--exclude ./.venv]
@@ -61,12 +66,12 @@ repos:
     hooks:
       # Run the linter.
       - id: ruff-check
-        args: [ --fix ]
+        args: [--fix]
       # Run the formatter.
       - id: ruff-format
   # add mypy
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 'v1.19.1'
+    rev: "v1.19.1"
     hooks:
       - id: mypy
         args: ["--show-error-codes", "--ignore-missing-imports"]
@@ -74,11 +79,11 @@ repos:
   # use local repository hooks so we can discover libraries.
   - repo: local
     hooks:
-    - id: pylint
-      name: pylint
-      entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
-      language: python
-      types: [python]
+      - id: pylint
+        name: pylint
+        entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
+        language: python
+        types: [python]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
     rev: v0.15.2
