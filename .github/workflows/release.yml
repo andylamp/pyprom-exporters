@@ -118,6 +118,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    environment: release
     needs: build-artifacts
     steps:
       - name: Download artifacts
