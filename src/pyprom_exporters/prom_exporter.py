@@ -322,6 +322,44 @@ def register_exporters(prom_port: int, collectors: list[BasePrometheusCollector]
         REGISTRY.register(collector)
 
 
+def _get_collector_hosts(collector: BasePrometheusCollector) -> set[str]:
+    """Extract known device hosts for a collector."""
+    discovered_devices = getattr(collector, "discovered_devices", None)
+    if isinstance(discovered_devices, dict):
+        return {str(host) for host in discovered_devices}
+
+    options = getattr(collector, "options", None)
+    configured_devices = getattr(options, "devices", None)
+    if isinstance(configured_devices, list):
+        return {str(host) for host in configured_devices}
+
+    return set()
+
+
+def log_startup_summary(
+    collectors: list[BasePrometheusCollector],
+    update_interval_seconds: int,
+) -> None:
+    """Log a readable startup summary with key runtime values."""
+    exporter_names = [collector.__class__.__name__ for collector in collectors]
+    hosts: set[str] = set()
+    for collector in collectors:
+        hosts.update(_get_collector_hosts(collector))
+
+    fs_log.info(
+        (
+            "Startup summary:\n"
+            "  Update interval        : %ss\n"
+            "  Registered exporters   : %s (%s)\n"
+            "  Total devices to scrape: %s"
+        ),
+        update_interval_seconds,
+        len(exporter_names),
+        ", ".join(exporter_names) if exporter_names else "none",
+        len(hosts),
+    )
+
+
 async def tapo_exporter_init(
     asyncio_loop: asyncio.AbstractEventLoop,
     options: TapoExporterOptions,
@@ -383,6 +421,12 @@ def main() -> None:
         exporter_list.append(tapo_exporter)
         termination_sig = Event()
         register_exporters(prom_port=app_config.prometheus_port, collectors=exporter_list)
+        update_interval_seconds = (
+            app_config.exporters.tapo.prometheus_options.refresh_interval
+            if app_config.exporters.tapo.prometheus_options
+            else 1
+        )
+        log_startup_summary(exporter_list, update_interval_seconds)
         graceful_exit_handler(termination_sig, exporter_list, exporter_loop, loop_thread)
         fs_log.info("Monitoring... waiting for a signal in case of termination...")
     except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
