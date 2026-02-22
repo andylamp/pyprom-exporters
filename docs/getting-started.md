@@ -29,6 +29,14 @@ uv run prom-exporter \
   --tapo-plug-devices 10.10.2.100,10.10.2.101
 ```
 
+Optional behavior:
+
+- Use background polling (default): set `exporters.tapo.prometheus_options.refresh_interval` to an
+  integer number of seconds.
+- Use scrape-triggered refresh: set `exporters.tapo.prometheus_options.refresh_interval: null`.
+
+At startup, the exporter logs whether automatic polling is enabled or disabled for each collector.
+
 Scrape endpoint:
 
 - `http://localhost:8090/metrics`

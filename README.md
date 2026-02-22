@@ -9,25 +9,20 @@ The current concrete exporter targets TP-Link Tapo smart plugs via `python-kasa`
 ## What It Does
 
 - Discovers Tapo devices on your LAN (UDP broadcast) and/or monitors an explicit list of device IPs.
-- Periodically updates device state on a background asyncio loop, with retries and backoff.
-- Exposes cached metrics via a Prometheus HTTP endpoint (scrapes do not talk to devices).
+- Updates device state on a background asyncio loop (or on scrape), with retries and backoff.
+- Exposes metrics via a Prometheus HTTP endpoint.
 
 ## How It Works
 
 - `prom-exporter` starts an asyncio event loop on a background thread.
-- The Tapo exporter runs discovery, performs an initial update pass, then starts periodic background
-  updates.
-- Prometheus scrapes call the exporter `collect()` method, which returns cached metric objects.
-  Device I/O happens in the background.
+- The Tapo exporter runs discovery, then chooses update mode from
+  `exporters.tapo.prometheus_options.refresh_interval`:
+  - Integer value: performs an initial update pass and periodic background updates, and scrapes read
+    cached metrics.
+  - `null`: disables background updates and refreshes metrics when Prometheus calls `collect()`.
 
-This means the exporter updates devices on its own schedule, not on Prometheus' scrape schedule.
-To reduce device/network traffic, set `exporters.tapo.prometheus_options.refresh_interval` to match
-your Prometheus scrape interval (or higher).
-
-The tradeoff is intentional:
-
-- Background polling keeps scrape latency low and predictable.
-- Scrapes do not block on device updates and are resilient to transient device timeouts.
+To reduce device/network traffic, set `refresh_interval` to match your Prometheus scrape interval
+(or higher). Set it to `null` when you want scrape-time freshness.
 
 ## Project Layout
 
@@ -109,12 +104,41 @@ Important fields:
 - `prometheus_port`: exporter listen port.
 - `exporters.tapo.devices`: list of device IPs to monitor (used in addition to discovery).
 - `exporters.tapo.prometheus_options.refresh_interval`: background update interval (seconds) and
-  per-device minimum update interval.
+  per-device minimum update interval. Set to `null` to disable background updates and refresh on
+  scrape.
 - `exporters.tapo.discovery_options.*`: discovery parameters passed to `python-kasa`.
 - `exporters.tapo.discovery_options.tapo_username_env_key` / `tapo_password_env_key`: env var names
   used to populate `python-kasa` `Credentials` by default.
 - `exporters.tapo.supported_device_families`: currently only `PLUG`.
 - `exporters.tapo.per_device_family_metrics.plug`: plug metrics to export.
+
+### Polling Behavior Examples
+
+Set the option internally (Python dataclass value):
+
+```python
+# Background polling every 15 seconds.
+app_config.exporters.tapo.prometheus_options.refresh_interval = 15
+
+# Disable background polling; refresh on every Prometheus scrape.
+app_config.exporters.tapo.prometheus_options.refresh_interval = None
+```
+
+When `config.yaml` is written back, those values appear as:
+
+```yaml
+exporters:
+  tapo:
+    prometheus_options:
+      refresh_interval: 15
+```
+
+```yaml
+exporters:
+  tapo:
+    prometheus_options:
+      refresh_interval: null
+```
 
 Discovery note: broadcast discovery generally does not work across VLAN boundaries. If your devices
 are on a separate IoT VLAN, set `exporters.tapo.devices` (or use `--tapo-plug-devices`) to the

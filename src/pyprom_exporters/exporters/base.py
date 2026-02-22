@@ -15,8 +15,8 @@ T = TypeVar("T")
 class BasePrometheusOptions:
     """Base options for Prometheus configuration."""
 
-    refresh_interval: int = 15
-    """Interval in seconds to refresh the metrics, if less - we use the cached value."""
+    refresh_interval: int | None = 15
+    """Refresh interval in seconds; set to ``None`` to disable background refresh and update on scrape."""
 
 
 class BasePrometheusCollector(Collector):

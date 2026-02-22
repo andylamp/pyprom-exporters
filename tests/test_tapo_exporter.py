@@ -6,6 +6,7 @@ This module exercises discovery behavior, metric collection output, and retry ha
 # pylint: disable=protected-access
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pyprom_exporters.exporters.tapo as tapo_module
@@ -77,6 +78,38 @@ def test_collect_emits_expected_metrics() -> None:
         assert consumption_metric.samples  # noqa: S101
         assert consumption_metric.samples[0].labels == {"host": "10.0.0.3", "alias": "plug-c"}  # noqa: S101
     finally:
+        loop.close()
+
+
+def test_collect_refreshes_on_scrape_when_auto_polling_disabled() -> None:
+    """Ensure collect triggers an update pass when background polling is disabled."""
+    loop = asyncio.new_event_loop()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    try:
+        device = FakeDevice("10.0.0.33", "plug-on-demand", make_features())
+        options = TapoExporterOptions(devices=["10.0.0.33"])
+        assert options.prometheus_options is not None  # noqa: S101
+        options.prometheus_options.refresh_interval = None
+
+        exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
+        exporter.discovered_devices = {"10.0.0.33": device}
+        exporter._update_device_factories = [  # noqa: SLF001
+            lambda: exporter._update_device(device, refresh_interval=None),  # noqa: SLF001
+        ]
+
+        metrics = list(exporter.collect())
+
+        assert device.update_calls == 1  # noqa: S101
+        assert any(metric.name == "current_consumption" for metric in metrics)  # noqa: S101
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5)
         loop.close()
 
 
@@ -168,5 +201,22 @@ def test_background_update_populates_cache(monkeypatch) -> None:
 
         assert cached  # noqa: S101
         assert any(metric.name == "tapo_discovered_devices" for metric in cached)  # noqa: S101
+    finally:
+        loop.close()
+
+
+def test_start_background_updates_skips_when_auto_polling_disabled() -> None:
+    """Ensure background update task is not created when refresh interval is disabled."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        options = TapoExporterOptions(devices=["10.0.0.6"])
+        assert options.prometheus_options is not None  # noqa: S101
+        options.prometheus_options.refresh_interval = None
+        exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
+
+        loop.run_until_complete(exporter.start_background_updates())
+
+        assert exporter._update_task is None  # noqa: S101, SLF001
     finally:
         loop.close()

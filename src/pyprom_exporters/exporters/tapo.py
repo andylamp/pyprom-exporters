@@ -36,8 +36,8 @@ DEFAULT_REFRESH_INTERVAL: int = 1
 class TapoPrometheusOptions(BasePrometheusOptions):
     """Options for the Tapo Prometheus exporter."""
 
-    refresh_interval: int = DEFAULT_REFRESH_INTERVAL
-    """Interval in seconds to refresh the metrics, if less - we use the cached value."""
+    refresh_interval: int | None = DEFAULT_REFRESH_INTERVAL
+    """Refresh interval in seconds; set to ``None`` to disable background updates and refresh on scrape."""
 
 
 @dataclass
@@ -338,8 +338,15 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
         self.callbacks: TapoCallbacks = callbacks or TapoCallbacks()
         self._auth_failed_devices: set[str] = set()
         self._metrics_lock = threading.Lock()
+        self._scrape_refresh_lock = threading.Lock()
         self._latest_metrics: list[Metric] = []
         self._update_task: asyncio.Task | None = None
+
+    def _get_refresh_interval(self) -> int | None:
+        """Return configured refresh interval for this collector."""
+        if self.options.prometheus_options is None:
+            return DEFAULT_REFRESH_INTERVAL
+        return self.options.prometheus_options.refresh_interval
 
     async def discover(self) -> None:
         """Discover Tapo devices on the network.
@@ -409,12 +416,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
 
         fs_log.info("Discovered %s Tapo devices.", len(discovered))
 
-        # use a predefined value if missing
-        refresh_interval = (
-            self.options.prometheus_options.refresh_interval
-            if self.options.prometheus_options
-            else DEFAULT_REFRESH_INTERVAL
-        )
+        refresh_interval = self._get_refresh_interval()
 
         # generate factories for updating each discovered device
         self._update_device_factories = [
@@ -470,11 +472,13 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
             return
         refresh_interval = interval
         if refresh_interval is None:
-            refresh_interval = (
-                self.options.prometheus_options.refresh_interval
-                if self.options.prometheus_options
-                else DEFAULT_REFRESH_INTERVAL
+            refresh_interval = self._get_refresh_interval()
+        if refresh_interval is None:
+            fs_log.info(
+                "Automatic polling is disabled for %s; metrics will be refreshed when Prometheus scrapes.",
+                self.__class__.__name__,
             )
+            return
         self._update_task = asyncio.create_task(self._background_update_loop(refresh_interval))
 
     async def stop_background_updates(self) -> None:
@@ -487,15 +491,15 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
         self._update_task = None
 
     @staticmethod
-    async def _update_device(device: Device, refresh_interval: int) -> TapoDeviceUpdateResult:
+    async def _update_device(device: Device, refresh_interval: int | None) -> TapoDeviceUpdateResult:
         """Update a single Tapo device.
 
         Parameters
         ----------
         device : Device
             The Tapo device to update.
-        refresh_interval: int
-            The refresh interval in seconds.
+        refresh_interval : int | None
+            The refresh interval in seconds. If ``None``, always update.
 
         """
         if device is None:
@@ -520,7 +524,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
 
         current_time = time.monotonic()
 
-        if not force_update and (current_time - last_update) < refresh_interval:
+        if refresh_interval is not None and not force_update and (current_time - last_update) < refresh_interval:
             fs_log.debug(
                 "Device %s at %s was updated recently, skipping update. "
                 "Last update time: %s, current time: %s, refresh interval: %s",
@@ -690,6 +694,14 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
             Prometheus Metric Iterable with the collected metrics.
 
         """
+        if self._get_refresh_interval() is None:
+            with self._scrape_refresh_lock:
+                update_future = asyncio.run_coroutine_threadsafe(self.update_and_collect(), self._asyncio_loop)
+                try:
+                    update_future.result()
+                except Exception:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+                    fs_log.exception("Scrape-triggered metric refresh failed; returning latest cached metrics.")
+
         with self._metrics_lock:
             metrics = list(self._latest_metrics)
         yield from metrics

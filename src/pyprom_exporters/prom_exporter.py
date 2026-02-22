@@ -19,7 +19,12 @@ from prometheus_client import start_http_server
 from prometheus_client.registry import REGISTRY
 
 from pyprom_exporters.config import PromExporterConfig
-from pyprom_exporters.exporters.tapo import TapoDiscoveryOptions, TapoExporterOptions, TapoPowerPlugPrometheusExporter
+from pyprom_exporters.exporters.tapo import (
+    DEFAULT_REFRESH_INTERVAL,
+    TapoDiscoveryOptions,
+    TapoExporterOptions,
+    TapoPowerPlugPrometheusExporter,
+)
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -336,10 +341,20 @@ def _get_collector_hosts(collector: BasePrometheusCollector) -> set[str]:
     return set()
 
 
-def log_startup_summary(
-    collectors: list[BasePrometheusCollector],
-    update_interval_seconds: int,
-) -> None:
+def _get_collector_refresh_interval(collector: BasePrometheusCollector) -> int | None | str:
+    """Extract refresh interval from collector options."""
+    options = getattr(collector, "options", None)
+    prometheus_options = getattr(options, "prometheus_options", None)
+    if prometheus_options is None:
+        return "unknown"
+
+    refresh_interval = getattr(prometheus_options, "refresh_interval", "unknown")
+    if refresh_interval is None or isinstance(refresh_interval, int):
+        return refresh_interval
+    return "unknown"
+
+
+def log_startup_summary(collectors: list[BasePrometheusCollector]) -> None:
     """Log a readable startup summary with key runtime values."""
     exporter_names = [collector.__class__.__name__ for collector in collectors]
     hosts: set[str] = set()
@@ -347,17 +362,30 @@ def log_startup_summary(
         hosts.update(_get_collector_hosts(collector))
 
     fs_log.info(
-        (
-            "Startup summary:\n"
-            "  Update interval        : %ss\n"
-            "  Registered exporters   : %s (%s)\n"
-            "  Total devices to scrape: %s"
-        ),
-        update_interval_seconds,
+        ("Startup summary:\n  Registered exporters   : %s (%s)\n  Total devices to scrape: %s"),
         len(exporter_names),
         ", ".join(exporter_names) if exporter_names else "none",
         len(hosts),
     )
+    for collector in collectors:
+        collector_name = collector.__class__.__name__
+        refresh_interval = _get_collector_refresh_interval(collector)
+        if isinstance(refresh_interval, int):
+            fs_log.info(
+                "Collector %s automatic polling is enabled (refresh_interval=%ss).",
+                collector_name,
+                refresh_interval,
+            )
+        elif refresh_interval is None:
+            fs_log.info(
+                "Collector %s automatic polling is disabled (refresh_interval=None); refreshing on scrape.",
+                collector_name,
+            )
+        else:
+            fs_log.info(
+                "Collector %s automatic polling configuration is unavailable.",
+                collector_name,
+            )
 
 
 async def tapo_exporter_init(
@@ -373,8 +401,12 @@ async def tapo_exporter_init(
 
     tapo_exporter = TapoPowerPlugPrometheusExporter(options=options, asyncio_loop=asyncio_loop)
     await tapo_exporter.discover()
-    await tapo_exporter.update_and_collect()
-    await tapo_exporter.start_background_updates()
+    refresh_interval: int | None = DEFAULT_REFRESH_INTERVAL
+    if options.prometheus_options is not None:
+        refresh_interval = options.prometheus_options.refresh_interval
+    if refresh_interval is not None:
+        await tapo_exporter.update_and_collect()
+    await tapo_exporter.start_background_updates(refresh_interval)
 
     return tapo_exporter
 
@@ -421,12 +453,7 @@ def main() -> None:
         exporter_list.append(tapo_exporter)
         termination_sig = Event()
         register_exporters(prom_port=app_config.prometheus_port, collectors=exporter_list)
-        update_interval_seconds = (
-            app_config.exporters.tapo.prometheus_options.refresh_interval
-            if app_config.exporters.tapo.prometheus_options
-            else 1
-        )
-        log_startup_summary(exporter_list, update_interval_seconds)
+        log_startup_summary(exporter_list)
         graceful_exit_handler(termination_sig, exporter_list, exporter_loop, loop_thread)
         fs_log.info("Monitoring... waiting for a signal in case of termination...")
     except Exception as e:  # noqa: BLE001  # pylint: disable=broad-exception-caught
