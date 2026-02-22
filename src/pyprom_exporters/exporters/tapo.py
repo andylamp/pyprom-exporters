@@ -359,6 +359,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
         # attempt to discover devices on the network while passing the provided options
         discovered: DeviceDict = {}
         if options.perform_discovery:
+            fs_log.info("Automatic discovery is enabled; performing network-wide Tapo discovery.")
             discovered = await Discover.discover(
                 target=options.target,
                 credentials=options.credentials,
@@ -372,6 +373,10 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
                 password=options.credentials.password if options.credentials else None,
                 port=options.port,
                 timeout=options.timeout,
+            )
+        else:
+            fs_log.info(
+                "Automatic discovery is disabled; skipping network-wide discovery and using configured device list.",
             )
 
         fs_log.debug("Discovered Tapo devices automatically: %s", len(discovered))
