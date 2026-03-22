@@ -201,10 +201,12 @@ def apply_cli_overrides(app_config: PromExporterConfig, args: argparse.Namespace
 
 def _diff_config_values(current: object, defaults: object) -> object | None:
     if isinstance(current, dict) and isinstance(defaults, dict):
-        diff: dict[object, object] = {}
-        for key, value in current.items():
-            if key in defaults:
-                nested = _diff_config_values(value, defaults[key])
+        current_dict = cast("dict[str, object]", current)
+        defaults_dict = cast("dict[str, object]", defaults)
+        diff: dict[str, object] = {}
+        for key, value in current_dict.items():
+            if key in defaults_dict:
+                nested = _diff_config_values(value, defaults_dict[key])
                 if nested is not None:
                     diff[key] = nested
             else:

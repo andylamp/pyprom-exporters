@@ -1,5 +1,9 @@
 # Python Prometheus Exporters for IoT Devices
 
+[![Linters](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml/badge.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
+[![Release](https://github.com/andylamp/pyprom-exporters/actions/workflows/release.yml/badge.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/release.yml)
+[![Coverage](https://raw.githubusercontent.com/andylamp/pyprom-exporters/main/coverage.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
+
 Python Prometheus Exporters (`pyprom-exporters`) is a small Python package that exposes Prometheus
 metrics for IoT / smart-home
 devices.
@@ -212,8 +216,8 @@ uv run pytest
 uv run ruff check .
 # format with ruff (or your editor integration)
 uv run ruff format .
-# pre-commit - for running all configured pre-commit hooks (ruff, isort, etc.)
-uv run pre-commit run --all-files
+# prek - for running all configured pre-commit hooks (ruff, isort, etc.)
+uv run prek run --all-files
 ```
 
 ## Documentation

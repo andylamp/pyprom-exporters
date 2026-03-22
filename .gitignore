@@ -149,10 +149,8 @@ venv.bak/
 # mkdocs documentation
 /site
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+# ty (type checker)
+.ty/
 
 # Pyre type checker
 .pyre/
@@ -172,6 +170,9 @@ cython_debug/
 
 # Ruff stuff:
 .ruff_cache/
+
+# Coverage reports (generated locally)
+coverage.xml
 
 # PyPI configuration file
 .pypirc

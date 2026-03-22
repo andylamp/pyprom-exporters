@@ -8,6 +8,9 @@ This module exercises discovery behavior, metric collection output, and retry ha
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import cast
+
+from kasa import Device
 
 import pyprom_exporters.exporters.tapo as tapo_module
 from pyprom_exporters.exporters.tapo import TapoExporterOptions, TapoPowerPlugPrometheusExporter
@@ -21,7 +24,7 @@ EXPECTED_RETRY_ATTEMPTS = 3
 def test_collect_from_device_requires_current_consumption() -> None:
     """Ensure devices without consumption data are skipped."""
     device = FakeDevice("10.0.0.1", "plug-1", features={"rssi": SimpleNamespace(value=-40.0)})
-    dump = TapoPowerPlugPrometheusExporter.collect_from_plug_device(device)
+    dump = TapoPowerPlugPrometheusExporter.collect_from_plug_device(cast(Device, device))
     assert dump is None  # noqa: S101
 
 
@@ -63,7 +66,7 @@ def test_collect_emits_expected_metrics() -> None:
         device = FakeDevice("10.0.0.3", "plug-c", make_features())
         options = TapoExporterOptions(devices=["10.0.0.3"])
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
-        exporter.discovered_devices = {"10.0.0.3": device}
+        exporter.discovered_devices = {"10.0.0.3": cast(Device, device)}
         metrics_snapshot = exporter._build_metrics()  # noqa: SLF001
         with exporter._metrics_lock:  # noqa: SLF001
             exporter._latest_metrics = metrics_snapshot  # noqa: SLF001
@@ -98,9 +101,9 @@ def test_collect_refreshes_on_scrape_when_auto_polling_disabled() -> None:
         options.prometheus_options.refresh_interval = None
 
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
-        exporter.discovered_devices = {"10.0.0.33": device}
+        exporter.discovered_devices = {"10.0.0.33": cast(Device, device)}
         exporter._update_device_factories = [  # noqa: SLF001
-            lambda: exporter._update_device(device, refresh_interval=None),  # noqa: SLF001
+            lambda: exporter._update_device(cast(Device, device), refresh_interval=None),  # noqa: SLF001
         ]
 
         metrics = list(exporter.collect())
@@ -121,9 +124,9 @@ def test_update_uses_retry_runner(monkeypatch) -> None:
         device = FakeDevice("10.0.0.4", "plug-d", make_features())
         options = TapoExporterOptions(devices=["10.0.0.4"])
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
-        exporter.discovered_devices = {"10.0.0.4": device}
+        exporter.discovered_devices = {"10.0.0.4": cast(Device, device)}
         exporter._update_device_factories = [  # noqa: SLF001
-            lambda: exporter._update_device(device, refresh_interval=0),  # noqa: SLF001
+            lambda: exporter._update_device(cast(Device, device), refresh_interval=0),  # noqa: SLF001
         ]
 
         called = {"count": 0}

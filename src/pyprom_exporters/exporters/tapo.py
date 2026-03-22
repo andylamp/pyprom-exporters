@@ -330,7 +330,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):  # pylint: disab
         # initialize the exporter with the provided options
         self.options: TapoExporterOptions = options or TapoExporterOptions()
         # update internal configuration
-        self._update_device_factories: list | None = None  # type: ignore[var-annotated]
+        self._update_device_factories: list | None = None
 
         # update the publicly accessible attributes
         self.discovered_devices: DeviceDict | None = None

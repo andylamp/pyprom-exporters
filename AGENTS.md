@@ -74,7 +74,7 @@ discovery and metric collection, exposed via `prometheus_client`.
 - Formatting and linting:
 - `ruff` with line length 119, Black-like formatting, isort rules.
 - `pylint` enabled with the same max line length.
-- `mypy` checks untyped defs.
+- `ty` checks untyped defs.
 - `markdownlint` uses `.markdownlint-cli2.jsonc` for shared VS Code + CLI configuration.
 - Documentation style: numpy-style docstrings.
 
@@ -88,7 +88,7 @@ All documentation in this repository should follow the Markdown style guide enfo
 When making changes, please ensure the following:
 
 - Ensure that `pytest` is executed and it passes.
-- Ensure that `uv run pre-commit run --all-files` is executed and it passes.
+- Ensure that `uv run prek run --all-files` is executed and it passes.
 
 ## Utilities and entry points
 

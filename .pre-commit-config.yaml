@@ -46,7 +46,7 @@ repos:
       - id: fasterer
       - id: git-check # Configure in .gitattributes
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.21.0
+    rev: v0.22.0
     hooks:
       - id: markdownlint-cli2 # Configure in .markdownlint-cli2.jsonc
   - repo: https://github.com/scop/pre-commit-shfmt
@@ -62,23 +62,23 @@ repos:
         args: [--exclude ./.venv]
   # add ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.2
+    rev: v0.15.7
     hooks:
       # Run the linter.
       - id: ruff-check
         args: [--fix]
       # Run the formatter.
       - id: ruff-format
-  # add mypy
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: "v1.19.1"
-    hooks:
-      - id: mypy
-        args: ["--show-error-codes", "--ignore-missing-imports"]
-        additional_dependencies: [types-requests]
   # use local repository hooks so we can discover libraries.
   - repo: local
     hooks:
+      # add ty (astral type checker, replaces mypy)
+      - id: ty-check
+        name: ty
+        entry: uv run ty check
+        language: system
+        types: [python]
+        pass_filenames: false
       - id: pylint
         name: pylint
         entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
@@ -86,7 +86,7 @@ repos:
         types: [python]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.15.2
+    rev: v0.15.7
     hooks:
       # Run the linter.
       - id: ruff-check

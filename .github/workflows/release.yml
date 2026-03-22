@@ -19,7 +19,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --dev
       - name: Pre-commit checks
-        run: uv run pre-commit run --all-files
+        run: uv run prek run --all-files
 
   test:
     runs-on: ubuntu-latest

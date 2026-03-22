@@ -19,10 +19,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen --dev
       - name: Pre-commit checks
-        run: uv run pre-commit run --all-files
+        run: uv run prek run --all-files
 
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      coverage-badge-filename: coverage.svg
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -32,8 +36,38 @@ jobs:
         run: uv python install 3.12
       - name: Sync dependencies
         run: uv sync --frozen --dev
-      - name: Pytest
-        run: uv run pytest
+      - name: Perform testing with pytest including coverage
+        run: |
+          uv run coverage run -m pytest
+          uv run coverage xml -o coverage.xml
+          uv run genbadge coverage -i coverage.xml -o ${{ env.coverage-badge-filename }} -l
+          uv run coverage report
+      - name: Check whether coverage badge changed
+        id: coverage_changed
+        env:
+          FILE_TO_CHECK: ${{ env.coverage-badge-filename }}
+        run: |
+          if git diff --quiet -- "$FILE_TO_CHECK"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Commit and push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.github_token }}
+          FILE_TO_COMMIT: ${{ env.coverage-badge-filename }}
+          DESTINATION_BRANCH: ${{ github.ref }}
+        if: steps.coverage_changed.outputs.changed == 'true'
+        run: |
+          export MESSAGE="[skip ci] updated ${{ env.coverage-badge-filename }}"
+          export SHA=$( git rev-parse $DESTINATION_BRANCH:$FILE_TO_COMMIT )
+          export CONTENT=$( base64 -w 0 "$FILE_TO_COMMIT" )
+          gh api --method PUT /repos/:owner/:repo/contents/$FILE_TO_COMMIT \
+            --field message="$MESSAGE" \
+            --field content="$CONTENT" \
+            --field encoding="base64" \
+            --field branch="$DESTINATION_BRANCH" \
+            --field sha="$SHA"
 
   build:
     runs-on: ubuntu-latest

@@ -15,7 +15,10 @@ docs = ["sphinx>=8.0.0", "myst-parser>=4.0.0", "furo>=2024.8.0"]
 dev = [
     "ruff>=0.11.11",
     "pytest>=8.4.0",
-    "pre-commit>=4.2.0",
+    "coverage>=7.0.0",
+    "genbadge[coverage]>=1.1.0",
+    "prek>=0.2.0",
+    "ty>=0.0.1a7",
     "pylint>=3.3.3",
     "sphinx>=8.0.0",
     "myst-parser>=4.0.0",
@@ -40,7 +43,7 @@ exclude = [
     ".git-rewrite",
     ".hg",
     ".ipynb_checkpoints",
-    ".mypy_cache",
+    ".ty",
     ".nox",
     ".pants.d",
     ".pyenv",
@@ -117,5 +120,4 @@ max-line-length = 119
 #     not-callable
 # """
 
-[tool.mypy]
-check_untyped_defs = true
+[tool.ty]

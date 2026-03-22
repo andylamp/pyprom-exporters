@@ -37,7 +37,7 @@
     "**/.coverage.*": true,
     "**/.venv": true,
     "**/__pycache__": true,
-    "**/.mypy_cache": true,
+    "**/.ty": true,
     "**/.pytest_cache": true
   },
   "ruff.nativeServer": true
