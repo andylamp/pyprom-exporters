@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
       - name: Install Python
@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
       - name: Install Python
@@ -47,7 +47,7 @@ jobs:
       tag: ${{ steps.read-version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup uv
@@ -78,7 +78,7 @@ jobs:
       - publish-docker
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Create tag
@@ -122,7 +122,7 @@ jobs:
     needs: prepare-release
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
       - name: Install Python
@@ -184,7 +184,7 @@ jobs:
     needs: prepare-release
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
