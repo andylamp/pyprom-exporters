@@ -1,17 +1,21 @@
 version: 2
+
+# Combine all version updates across ecosystems into one weekly pull request.
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
+    patterns: ["*"]
+    multi-ecosystem-group: "dependencies"
   - package-ecosystem: "uv"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
+    patterns: ["*"]
+    multi-ecosystem-group: "dependencies"
   - package-ecosystem: "docker"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
+    patterns: ["*"]
+    multi-ecosystem-group: "dependencies"
