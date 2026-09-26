@@ -13,7 +13,7 @@
 - `exporters.tapo.devices`: explicit device IP list.
 - `exporters.tapo.prometheus_options.refresh_interval`: update mode selector:
   - Integer seconds: periodic background polling is enabled and scrapes read cached metrics.
-  - `null`: background polling is disabled and metrics refresh during each Prometheus scrape.
+  - `null` (default): background polling is disabled and devices refresh during each Prometheus scrape.
 - `exporters.tapo.discovery_options.*`: discovery settings passed to `python-kasa`.
 
 At startup, the exporter logs one `INFO` message per registered collector indicating whether
@@ -27,7 +27,7 @@ Set the option internally (Python dataclass value):
 # Background polling every 15 seconds.
 app_config.exporters.tapo.prometheus_options.refresh_interval = 15
 
-# Disable background polling; refresh on every Prometheus scrape.
+# Default: live probing during every Prometheus scrape.
 app_config.exporters.tapo.prometheus_options.refresh_interval = None
 ```
 
@@ -47,6 +47,9 @@ exporters:
       refresh_interval: null
 ```
 
+Configurations with an explicit integer keep background polling after upgrading. Change that
+value to `null` to enable live probing. If `refresh_interval` is omitted, live probing is used.
+
 ## Override Order
 
 Override precedence is:
@@ -61,8 +64,18 @@ Override precedence is:
   (default `10`, must be a positive integer).
 - `exporters.tapo.prometheus_options.scrape_timeout` bounds how long a scrape waits for an update
   when `refresh_interval` is `null` (default `10.0` seconds, must be finite and positive).
-- Overlapping scrapes share a refresh. If it times out, the exporter returns the previous cached
-  snapshot. Use periodic background polling when device updates routinely exceed a scrape deadline.
+- Overlapping scrapes share one refresh. When a scrape's wait expires, it returns the previous
+  completed snapshot; the refresh continues and publishes its result for subsequent scrapes. A
+  timeout never restarts the fleet from its first device. Shutdown cancels any outstanding refresh.
+- Discovery publishes initial readings before the HTTP endpoint starts, including in live mode.
+- The wait budget covers device refresh, not serialization or network transfer. Set the exporter's
+  `scrape_timeout` below Prometheus's scrape timeout; for example, use a 10-second exporter wait and
+  a 15-second Prometheus timeout with a 30-second scrape interval. Choose budgets from observed
+  fleet latency, or opt into background polling if updates routinely exceed a scrape deadline.
+- `collect()` is synchronous: it must run outside the exporter's asyncio event loop to wait for live
+  I/O. The bundled HTTP server already does this. Async library callers should instead await
+  `update_and_collect()` before collecting or serializing on that loop. Collecting on the owning
+  loop, or when that loop is stopped, returns the current snapshot without device I/O.
 - A device update failure does not abort updates for healthy devices. Failed devices are omitted
   from the next completed snapshot until they recover; unavailable measurements are omitted rather
   than reported as zero.
@@ -74,7 +87,8 @@ Override precedence is:
   rediscovery or a restart unless their hosts are explicitly configured. The configured-host worker
   bound does not control tasks created internally by broadcast discovery.
 - `tapo_discovered_devices` reports the discovered inventory, including temporarily failed devices;
-  it is not a count of healthy devices.
+  it is not a count of healthy devices. A successful HTTP response can contain the fallback snapshot,
+  and no metric currently reports its age; consult timeout and update-failure logs for diagnosis.
 
 Metric names can be customized independently of the measurement selected by each metric type.
 Labels must include `host` to keep device series distinct. Optional labels are `alias`, `model`,
@@ -131,5 +145,8 @@ programmatic analysis, including the environment and workload settings. Use
 working directory, and custom directories are not automatically ignored by Git.
 
 Results cover healthy and failing devices, retries, missing-host recovery, concurrency limits,
-asyncio tasks, serialization costs, and Python allocations. Memory tracing runs separately from
+asyncio tasks, serialization costs, and Python allocations. The reported scrape timing measures
+serialization of a completed snapshot on the asyncio loop; it excludes live refresh waits, HTTP
+request handling, and network transfer. Use the update and serialization timings separately when
+assessing live-mode costs. Memory tracing runs separately from
 timing measurements. Simulated device measurements do not establish physical-device capacity.

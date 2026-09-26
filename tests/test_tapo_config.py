@@ -6,7 +6,13 @@ import pytest
 from omegaconf import OmegaConf
 
 from pyprom_exporters.exporters import tapo as tapo_module
-from pyprom_exporters.exporters.tapo import TapoDiscoveryOptions, TapoExporterOptions
+from pyprom_exporters.exporters.tapo import (
+    TapoDeviceFamilyMetrics,
+    TapoDiscoveryOptions,
+    TapoExporterOptions,
+    TapoPerPlugMetricType,
+    TapoPlugGaugeMetric,
+)
 
 
 def test_tapo_discovery_options_uses_env_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,7 +62,7 @@ def test_tapo_exporter_options_default_subconfigs() -> None:
 
     assert options.discovery_options is not None
     assert options.prometheus_options is not None
-    assert options.prometheus_options.refresh_interval == tapo_module.DEFAULT_REFRESH_INTERVAL
+    assert options.prometheus_options.refresh_interval is None
     assert options.supported_device_families == {tapo_module.TapoDeviceFamily.PLUG: True}
     assert options.per_device_family_metrics is not None
     assert set(options.per_device_family_metrics.plug.keys()) == set(
@@ -100,3 +106,18 @@ def test_tapo_exporter_options_omegaconf_roundtrip(monkeypatch: pytest.MonkeyPat
     assert options.discovery_options.credentials is not None
     assert options.discovery_options.credentials.username == "roundtrip-user"
     assert options.discovery_options.credentials.password == "roundtrip-pass"  # ruff: ignore[hardcoded-password-string]
+
+
+def test_empty_metric_name_is_rejected_before_discovery() -> None:
+    """Malformed metric definitions fail while loading configuration."""
+    metrics = TapoDeviceFamilyMetrics(plug={TapoPerPlugMetricType.CURRENT_CONSUMPTION: TapoPlugGaugeMetric(name="")})
+    with pytest.raises(ValueError, match="metric name cannot be empty"):
+        TapoExporterOptions(per_device_family_metrics=metrics)
+
+
+def test_metric_names_follow_prometheus_client_utf8_support() -> None:
+    """Early validation preserves names allowed by the configured Prometheus client."""
+    metric = TapoPlugGaugeMetric(name="consommation_électrique")
+    metrics = TapoDeviceFamilyMetrics(plug={TapoPerPlugMetricType.CURRENT_CONSUMPTION: metric})
+    options = TapoExporterOptions(per_device_family_metrics=metrics)
+    assert options.per_device_family_metrics is metrics

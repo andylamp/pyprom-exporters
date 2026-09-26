@@ -356,7 +356,7 @@ def test_registry_registration_does_not_trigger_device_io(monkeypatch: pytest.Mo
         loop.close()
 
 
-def test_scrape_timeout_cancels_refresh_and_returns_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scrape_timeout_returns_cache_until_cleanup_cancels_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unresponsive device cannot tie up the HTTP worker indefinitely."""
     loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -385,8 +385,10 @@ def test_scrape_timeout_cancels_refresh_and_returns_cache(monkeypatch: pytest.Mo
         start = time.monotonic()
         assert not list(exporter.collect())
         assert time.monotonic() - start < 1
-        assert cancelled.wait(5)
+        assert not cancelled.is_set()
     finally:
+        asyncio.run_coroutine_threadsafe(exporter.cleanup(), loop).result(timeout=5)
+        assert cancelled.wait(5)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
         loop.close()
@@ -513,7 +515,7 @@ def test_recovery_discovery_is_bounded_fair_and_removes_recovered_hosts(monkeypa
                 batch_sizes.append(len(attempts) - previous_attempts)
             assert batch_sizes == [2, 2, 1]
             assert sorted(attempts) == missing_hosts
-            assert healthy.update_calls == 1
+            assert healthy.update_calls == 3
             await exporter.update_and_collect()
             assert len(attempts) == len(missing_hosts)
             recovered_host = attempts[0]
@@ -699,7 +701,10 @@ def test_concurrent_cleanup_waits_for_single_disconnect() -> None:
     asyncio.run(exercise())
 
 
-def test_cancelled_cleanup_prevents_inflight_refresh_from_republishing() -> None:
+@pytest.mark.parametrize("rediscover", [False, True])
+def test_cancelled_cleanup_prevents_inflight_refresh_from_republishing(
+    monkeypatch: pytest.MonkeyPatch, *, rediscover: bool
+) -> None:
     """A refresh finishing after interrupted shutdown cannot restore stale cached readings."""
 
     async def exercise() -> None:
@@ -715,7 +720,8 @@ def test_cancelled_cleanup_prevents_inflight_refresh_from_republishing() -> None
             await release.wait()
 
         device.update = AsyncMock(side_effect=update)
-        refresh = asyncio.create_task(exporter.update_and_collect())
+        monkeypatch.setattr(tapo_module.Discover, "discover", AsyncMock(return_value={device.host: device}))
+        refresh = asyncio.create_task(exporter.discover() if rediscover else exporter.update_and_collect())
         await asyncio.wait_for(started.wait(), timeout=2)
         cleanup = asyncio.create_task(exporter.cleanup())
         try:

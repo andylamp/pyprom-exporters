@@ -205,14 +205,13 @@ def test_background_update_populates_cache(monkeypatch: pytest.MonkeyPatch) -> N
         loop.close()
 
 
-def test_start_background_updates_skips_when_auto_polling_disabled() -> None:
-    """Ensure background update task is not created when refresh interval is disabled."""
+def test_start_background_updates_skips_by_default() -> None:
+    """The default live mode must not start a background update task."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         options = TapoExporterOptions(devices=["10.0.0.6"])
         assert options.prometheus_options is not None
-        options.prometheus_options.refresh_interval = None
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
 
         loop.run_until_complete(exporter.start_background_updates())

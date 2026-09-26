@@ -12,7 +12,6 @@ import math
 import os
 import threading
 import time
-from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import islice
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_REFRESH_INTERVAL: int = 1
+DEFAULT_REFRESH_INTERVAL: int | None = None
 REDISCOVERY_INTERVAL: float = 30.0
 
 
@@ -44,7 +43,7 @@ class TapoPrometheusOptions(BasePrometheusOptions):
     """Options for the Tapo Prometheus exporter."""
 
     refresh_interval: int | None = DEFAULT_REFRESH_INTERVAL
-    """Refresh interval in seconds; set to ``None`` to refresh on scrape."""
+    """Background refresh interval in seconds; ``None`` (default) probes on scrape."""
     scrape_timeout: float = 10.0
     """Maximum seconds a scrape waits for a device refresh."""
 
@@ -112,7 +111,39 @@ class TapoDiscoveryOptions:
     """Key for Tapo password in the device data, default is 'TP_LINK_PASSWORD'."""
 
     def __post_init__(self) -> None:
-        """Post-initialization to ensure credentials are set."""
+        """Validate discovery settings before resolving credentials.
+
+        Raises
+        ------
+        ValueError
+            If packet counts, timeouts, or an explicit discovery port are invalid.
+
+        """
+        if (
+            isinstance(self.discovery_packets, bool)
+            or not isinstance(self.discovery_packets, int)
+            or self.discovery_packets < 1
+        ):
+            message = "discovery_packets must be a positive integer"
+            raise ValueError(message)
+        timeouts = {"discovery_timeout": self.discovery_timeout}
+        if self.timeout is not None:
+            timeouts["timeout"] = self.timeout
+        for name, value in timeouts.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                message = f"{name} must be finite and positive"
+                raise ValueError(message)
+        max_port = 65535
+        if self.port is not None and (
+            isinstance(self.port, bool) or not isinstance(self.port, int) or not 1 <= self.port <= max_port
+        ):
+            message = f"port must be an integer between 1 and {max_port}, or None"
+            raise ValueError(message)
         if self.credentials is None:
             self.credentials = Credentials(
                 username=os.getenv(self.tapo_username_env_key, ""),
@@ -315,12 +346,12 @@ class TapoExporterOptions:
             self.supported_device_families = normalized_families
 
     def _validate_metric_definitions(self) -> None:
-        """Require unique names and labels that identify each device.
+        """Require valid, unique metric names and labels that identify each device.
 
         Raises
         ------
         ValueError
-            If metric names repeat or labels cannot identify devices uniquely.
+            If metric names are invalid or repeated, or labels cannot identify devices uniquely.
 
         """
         if self.per_device_family_metrics is None:
@@ -328,6 +359,8 @@ class TapoExporterOptions:
         names = {"tapo_discovered_devices"}
         allowed_labels = {"host", "alias", "model", "device_type", "firmware_version", "hardware_version"}
         for metric in self.per_device_family_metrics.plug.values():
+            # Apply the client's naming rules before discovery starts any device I/O.
+            metric.get_metric()
             if metric.name in names:
                 message = f"Duplicate metric name: {metric.name}"
                 raise ValueError(message)
@@ -465,6 +498,12 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             logger.info("Discovered %s Tapo devices.", len(self.discovered_devices))
             if options.with_update:
                 await self._update_devices()
+            if self._closed:
+                return
+            # Publish discovery readings without another device update, including in live mode.
+            metrics = self._build_metrics()
+            with self._metrics_lock:
+                self._latest_metrics = metrics
 
     async def _discover_configured_devices(self, *, full_scan: bool = False) -> None:
         """Retry one wave of missing hosts with fair per-host cooldowns.
@@ -525,7 +564,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                     self._pending_hosts.pop(host)
                     self._pending_hosts[host] = retry_at
             self._next_discovery_time = next(iter(self._pending_hosts.values()), math.inf)
-            # A scrape deadline can cancel discovery after some hosts have succeeded.
+            # Cancellation can interrupt discovery after some hosts have succeeded.
             self._update_device_factories = [
                 lambda device=device: self._update_device(device, self._get_refresh_interval())
                 for device in self.discovered_devices.values()
@@ -603,12 +642,25 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         self._update_task = asyncio.create_task(self._background_update_loop(refresh_interval))
 
     async def stop_background_updates(self) -> None:
-        """Cancel and await periodic updates."""
+        """Cancel and await periodic updates.
+
+        Raises
+        ------
+        CancelledError
+            If the caller is cancelled while awaiting the background task.
+
+        """
         if self._update_task is None:
             return
         self._update_task.cancel()
-        with suppress(asyncio.CancelledError):
+        try:
             await self._update_task
+        except asyncio.CancelledError:
+            # A cancelled child is expected; cancellation of this caller must
+            # still interrupt cleanup and preserve the caller's deadline.
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
         self._update_task = None
 
     async def _update_device(self, device: Device, refresh_interval: int | None) -> TapoDeviceUpdateResult:
@@ -851,7 +903,9 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         try:
             future.result(timeout=timeout)
         except TimeoutError:
-            future.cancel()
+            # The deadline bounds this HTTP request, not the shared refresh.
+            # Cancelling the pass here would repeatedly starve later devices
+            # in fleets whose total update time exceeds the scrape budget.
             logger.warning("Scrape refresh exceeded %s seconds; returning cached metrics.", timeout)
         except Exception:
             logger.exception("Scrape refresh failed; returning cached metrics.")

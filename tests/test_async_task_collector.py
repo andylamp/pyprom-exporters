@@ -262,6 +262,53 @@ def test_self_cancellation_propagates(concurrency: int | None) -> None:
         )
 
 
+@pytest.mark.parametrize("concurrency", [None, 2])
+@pytest.mark.parametrize("return_exceptions", [False, True])
+@pytest.mark.parametrize("cancel_task", [False, True])
+def test_self_cancellation_cancels_and_joins_hanging_siblings(
+    concurrency: int | None, *, return_exceptions: bool, cancel_task: bool
+) -> None:
+    """A cancelled factory must interrupt siblings without waiting for their results."""
+
+    async def scenario() -> None:
+        sibling_started = asyncio.Event()
+        sibling_cleaned_up = asyncio.Event()
+
+        async def self_cancel() -> None:
+            await sibling_started.wait()
+            if cancel_task:
+                task = asyncio.current_task()
+                assert task is not None
+                task.cancel()
+                await asyncio.sleep(0)
+            raise asyncio.CancelledError
+
+        async def sibling() -> None:
+            sibling_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                sibling_cleaned_up.set()
+
+        running = asyncio.create_task(
+            run_tasks_with_retry(
+                [self_cancel, sibling],
+                concurrency=concurrency,
+                return_exceptions=return_exceptions,
+                retry_exceptions=(BaseException,),
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, timeout=2)
+        assert sibling_cleaned_up.is_set()
+        assert running.cancelled()
+        assert running.cancelling() == 1
+        assert len(asyncio.all_tasks()) == 1
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "options",
     [

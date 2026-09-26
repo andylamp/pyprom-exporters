@@ -107,9 +107,9 @@ Important fields:
 - `log_level`: root logging level for the process.
 - `prometheus_port`: exporter listen port.
 - `exporters.tapo.devices`: list of device IPs to monitor (used in addition to discovery).
-- `exporters.tapo.prometheus_options.refresh_interval`: background update interval (seconds) and
-  per-device minimum update interval. Set to `null` to disable background updates and refresh on
-  scrape.
+- `exporters.tapo.prometheus_options.refresh_interval`: `null` by default, which probes devices
+  during each scrape. A positive integer enables background polling with that interval in seconds;
+  scrapes then read the latest completed snapshot.
 - `exporters.tapo.discovery_options.*`: discovery parameters passed to `python-kasa`.
 - `exporters.tapo.discovery_options.tapo_username_env_key` / `tapo_password_env_key`: env var names
   used to populate `python-kasa` `Credentials` by default.
@@ -124,7 +124,7 @@ Set the option internally (Python dataclass value):
 # Background polling every 15 seconds.
 app_config.exporters.tapo.prometheus_options.refresh_interval = 15
 
-# Disable background polling; refresh on every Prometheus scrape.
+# Default: live probing during every Prometheus scrape.
 app_config.exporters.tapo.prometheus_options.refresh_interval = None
 ```
 
@@ -143,6 +143,13 @@ exporters:
     prometheus_options:
       refresh_interval: null
 ```
+
+Existing configurations with an integer `refresh_interval` keep background polling; change it to
+`null` to enable live probing. Overlapping live scrapes share one device refresh. Each scrape waits
+up to `scrape_timeout` seconds (default `10.0`); on timeout it returns the last completed snapshot
+while the shared refresh continues. Initial discovery also publishes a snapshot.
+See [collection and failure recovery](docs/configuration.md#bounded-collection-and-failure-recovery)
+for timeout tuning and the synchronous collector interface.
 
 Discovery note: broadcast discovery generally does not work across VLAN boundaries. If your devices
 are on a separate IoT VLAN, set `exporters.tapo.devices` (or use `--tapo-plug-devices`) to the
@@ -169,6 +176,8 @@ Example `prometheus.yml`:
 ```yaml
 scrape_configs:
   - job_name: pyprom-exporters
+    scrape_interval: 30s
+    scrape_timeout: 15s  # Allow headroom above the exporter's 10-second device wait.
     static_configs:
       - targets: ["<exporter-host>:8090"]
 ```

@@ -111,6 +111,12 @@ def _validate_options(
         raise TypeError(message)
 
 
+def _cancel_owner(owner: asyncio.Task[object] | None) -> None:
+    """Propagate child cancellation without repeating an existing cancellation request."""
+    if owner is not None and not owner.cancelling():
+        owner.cancel()
+
+
 @overload
 async def run_tasks_with_retry(
     factories: Iterable[Callable[[], Awaitable[T]]],
@@ -217,6 +223,8 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
         retry_exceptions=retry_exceptions,
     )
 
+    owner = asyncio.current_task()
+
     async def _run(factory: Callable[[], Awaitable[T]]) -> T | Exception:
         try:
             return await _retry(
@@ -227,6 +235,11 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
                 jitter=jitter,
                 retry_exceptions=retry_exceptions,
             )
+        except asyncio.CancelledError:
+            # TaskGroup treats a cancelled child as normal completion. Cancel
+            # the owner so independent child cancellation also joins siblings.
+            _cancel_owner(owner)
+            raise
         except Exception as exc:
             if return_exceptions:
                 return exc

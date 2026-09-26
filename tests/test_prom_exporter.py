@@ -21,8 +21,10 @@ from prometheus_client.metrics_core import GaugeMetricFamily
 
 from pyprom_exporters import prom_exporter as runtime
 from pyprom_exporters.config import PromExporterConfig
+from pyprom_exporters.exporters import tapo as tapo_module
 from pyprom_exporters.exporters.base import BasePrometheusCollector
 from pyprom_exporters.exporters.tapo import TapoExporterOptions
+from tests.conftest import FakeDevice, make_features
 
 
 class StubCollector(BasePrometheusCollector):
@@ -98,16 +100,17 @@ def test_config_custom_credential_environment(tmp_path: Path, monkeypatch: pytes
     assert discovery.credentials.password == custom_password
 
 
-def test_minimal_config_preserves_null_refresh_interval(tmp_path: Path) -> None:
-    """Writing a minimal config must retain null values that disable background polling."""
+@pytest.mark.parametrize("interval", [None, 15])
+def test_minimal_config_preserves_refresh_mode(tmp_path: Path, interval: int | None) -> None:
+    """Minimal configuration must retain live defaults and explicit background polling."""
     app = PromExporterConfig()
     assert app.exporters.tapo.prometheus_options is not None
-    app.exporters.tapo.prometheus_options.refresh_interval = None
+    app.exporters.tapo.prometheus_options.refresh_interval = interval
     config_path = tmp_path / "config.yaml"
     runtime.write_config(OmegaConf.structured(app), config_path, minimal=True)
     loaded, _, _ = runtime.load_app_config(str(config_path))
     assert loaded.exporters.tapo.prometheus_options is not None
-    assert loaded.exporters.tapo.prometheus_options.refresh_interval is None
+    assert loaded.exporters.tapo.prometheus_options.refresh_interval == interval
 
 
 @pytest.mark.parametrize("minimal", [False, True])
@@ -287,3 +290,27 @@ def test_shutdown_preserves_concurrently_completed_startup() -> None:
 
     event.wait.side_effect = complete_during_wait
     assert runtime._wait_for_startup(future, event) is collector
+
+
+@pytest.mark.parametrize("interval", [None, 15])
+def test_initialization_publishes_discovery_readings(monkeypatch: pytest.MonkeyPatch, interval: int | None) -> None:
+    """Both modes expose initial readings without repeating successful discovery updates."""
+    device = FakeDevice("10.0.0.1", "plug", make_features())
+    monkeypatch.setattr(tapo_module.Discover, "discover", AsyncMock(return_value={device.host: device}))
+    options = TapoExporterOptions()
+    assert options.prometheus_options is not None
+    options.prometheus_options.refresh_interval = interval
+
+    async def exercise() -> None:
+        exporter = await runtime.tapo_exporter_init(asyncio.get_running_loop(), options)
+        try:
+            assert device.update_calls == 1
+            assert (exporter._update_task is None) == (interval is None)
+            metrics = {metric.name: metric for metric in exporter.collect()}
+            assert metrics["tapo_discovered_devices"].samples[0].value == 1
+            assert metrics["current_consumption"].samples[0].value == pytest.approx(5.0)
+        finally:
+            await exporter.cleanup()
+        assert device.disconnect_calls == 1
+
+    asyncio.run(exercise())

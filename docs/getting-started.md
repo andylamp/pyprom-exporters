@@ -29,11 +29,21 @@ uv run prom-exporter \
   --tapo-plug-devices 10.10.2.100,10.10.2.101
 ```
 
-Optional behavior:
+Tapo uses live probing on each scrape by default:
 
-- Use background polling (default): set `exporters.tapo.prometheus_options.refresh_interval` to an
-  integer number of seconds.
-- Use scrape-triggered refresh: set `exporters.tapo.prometheus_options.refresh_interval: null`.
+```yaml
+exporters:
+  tapo:
+    prometheus_options:
+      refresh_interval: null
+```
+
+To opt into background polling, set `refresh_interval` to a positive integer number of seconds.
+Existing configuration files with an integer retain their chosen polling mode until changed to
+`null`. Live scrapes share an in-progress refresh and fall back to the previous completed snapshot
+if their wait exceeds `scrape_timeout` (default `10.0` seconds); the refresh continues in the
+background to serve later scrapes. Set Prometheus's scrape timeout above that budget to leave time
+for serialization and network transfer.
 
 At startup, the exporter logs whether automatic polling is enabled or disabled for each collector.
 

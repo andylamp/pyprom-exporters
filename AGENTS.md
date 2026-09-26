@@ -45,7 +45,8 @@ discovery and metric collection, exposed via `prometheus_client`.
 1. Apply CLI overrides for port, device list, and credentials (CLI takes precedence).
 1. Start an asyncio event loop on a background thread.
 1. Initialize `TapoPowerPlugPrometheusExporter`, run discovery, and cache initial metrics.
-1. Start background updates on the asyncio loop; Prometheus scrapes read cached metrics only.
+1. Use live probing on scrape by default; an integer refresh interval enables background polling.
+1. Coalesce overlapping live scrapes; timed-out callers use the snapshot while the refresh continues.
 1. Register the collector with `prometheus_client.REGISTRY`.
 1. Start HTTP server using `prometheus_port` (default 8090).
 1. Handle SIGINT/SIGTERM for graceful shutdown and cleanup.
