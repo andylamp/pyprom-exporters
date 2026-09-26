@@ -1,3 +1,6 @@
+# Copyright (c) 2026 pyprom-exporters contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Application configuration models for pyprom_exporters."""
 
 from __future__ import annotations

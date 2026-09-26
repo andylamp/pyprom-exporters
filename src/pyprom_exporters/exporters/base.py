@@ -1,14 +1,15 @@
+# Copyright (c) 2026 pyprom-exporters contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Base class for the prometheus exporters."""
 
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 from prometheus_client.metrics_core import Metric
 from prometheus_client.registry import Collector
-
-T = TypeVar("T")
 
 
 @dataclass
@@ -26,15 +27,15 @@ class BasePrometheusCollector(Collector):
     def collect(self) -> Iterable[Metric]:
         """Export the metrics in a format suitable for Prometheus.
 
+        Returns
+        -------
+        Iterable[Metric]
+            Metric families exported to Prometheus.
+
         Raises
         ------
         NotImplementedError
             If the method is not implemented by a subclass.
-
-        Returns
-        -------
-        MetricWrapperBase
-            A wrapper around the metrics to be exported.
 
         """
         msg = "Subclasses must implement this method."

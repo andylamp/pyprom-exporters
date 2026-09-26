@@ -1,4 +1,4 @@
 # Copyright (c) 2026 pyprom-exporters contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Main entry point for the pyprom_exporters package."""
+"""Reproducible, offline performance measurements."""

@@ -72,8 +72,8 @@ discovery and metric collection, exposed via `prometheus_client`.
 - Docstrings use numpy-style sections.
 - Logging via `logging` module; explicit debug/info statements.
 - Formatting and linting:
-- `ruff` with line length 119, Black-like formatting, isort rules.
-- `pylint` enabled with the same max line length.
+- `ruff` with all stable and preview lint rules, line length 119, Black-like formatting, and isort rules.
+- `pytest-xdist` runs tests in parallel with up to four workers by default; use `-n 0` for serial debugging.
 - `ty` checks untyped defs.
 - `markdownlint` uses `.markdownlint-cli2.jsonc` for shared VS Code + CLI configuration.
 - Documentation style: numpy-style docstrings.

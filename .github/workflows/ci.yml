@@ -6,79 +6,111 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: actions/checkout@v7
+      - name: Setup uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.12.19"
+          python-version: "3.14"
       - name: Sync dependencies
-        run: uv sync --frozen --dev
-      - name: Pre-commit checks
-        run: uv run prek run --all-files
+        run: uv sync --locked
+      - name: Prek checks
+        run: uv run --locked prek run --all-files
+      - name: Build documentation
+        run: uv run --locked docs
 
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      coverage-badge-filename: coverage.svg
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: actions/checkout@v7
+      - name: Setup uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.12.19"
+          python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
-        run: uv sync --frozen --dev
-      - name: Perform testing with pytest including coverage
+        run: uv sync --locked
+      - name: Parallel pytest with SlipCover coverage
+        run: uv run --locked python -m slipcover --source src/pyprom_exporters --xml --out coverage.xml -m pytest
+      - name: Generate coverage badge
+        run: uv run --locked genbadge coverage -i coverage.xml -o coverage.svg -l
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: |
+            coverage.xml
+            coverage.svg
+
+  update-coverage-badge:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Download coverage badge
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-3.14
+          path: coverage-artifact
+      - name: Update badge for the tested revision
         run: |
-          uv run coverage run -m pytest
-          uv run coverage xml -o coverage.xml
-          uv run genbadge coverage -i coverage.xml -o ${{ env.coverage-badge-filename }} -l
-          uv run coverage report
-      - name: Check whether coverage badge changed
-        id: coverage_changed
-        env:
-          FILE_TO_CHECK: ${{ env.coverage-badge-filename }}
-        run: |
-          if git diff --quiet -- "$FILE_TO_CHECK"; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "Main has advanced; skipping the outdated coverage badge."
+            exit 0
           fi
-      - name: Commit and push changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.github_token }}
-          FILE_TO_COMMIT: ${{ env.coverage-badge-filename }}
-          DESTINATION_BRANCH: ${{ github.ref }}
-        if: steps.coverage_changed.outputs.changed == 'true'
-        run: |
-          export MESSAGE="[skip ci] updated ${{ env.coverage-badge-filename }}"
-          export SHA=$( git rev-parse $DESTINATION_BRANCH:$FILE_TO_COMMIT )
-          export CONTENT=$( base64 -w 0 "$FILE_TO_COMMIT" )
-          gh api --method PUT /repos/:owner/:repo/contents/$FILE_TO_COMMIT \
-            --field message="$MESSAGE" \
-            --field content="$CONTENT" \
-            --field encoding="base64" \
-            --field branch="$DESTINATION_BRANCH" \
-            --field sha="$SHA"
+          cp coverage-artifact/coverage.svg coverage.svg
+          git add coverage.svg
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m '[skip ci] Update coverage badge'
+          git push origin HEAD:main
 
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
-      - name: Sync dependencies
-        run: uv sync --frozen --no-dev
-      - name: Build
-        run: uv build
+        uses: actions/checkout@v7
+      - name: Setup uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.12.19"
+          python-version: "3.14"
+      - name: Verify lockfile
+        run: uv lock --check
+      - name: Build distributions
+        run: uv build --no-sources
+      - name: Smoke test installed wheel
+        run: |
+          uv venv /tmp/pyprom-wheel-test
+          uv pip install --python /tmp/pyprom-wheel-test/bin/python dist/*.whl
+          /tmp/pyprom-wheel-test/bin/prom-exporter --help
+      - name: Build container
+        run: docker build -t pyprom-exporters:test .
+      - name: Smoke test container entrypoint
+        run: docker run --rm pyprom-exporters:test --help

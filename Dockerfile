@@ -1,31 +1,20 @@
-FROM python:3.12-alpine
+FROM python:3.14-slim AS builder
 
-# Set working directory
+COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
 WORKDIR /app
-# Copy application files
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md /app/
 COPY src /app/src
+RUN uv sync --locked --no-dev --no-editable
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+FROM python:3.14-slim
 
-# Build-time argument for runtime default port.
+WORKDIR /app
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 ARG PROMETHEUS_PORT=8090
-ARG TAPO_PLUG_DEVICES=""
-
-# Environment variables
-ENV PYTHONUNBUFFERED=1
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-ENV PYTHONPATH=.
 ENV PROMETHEUS_PORT=${PROMETHEUS_PORT}
-ENV TAPO_PLUG_DEVICES=${TAPO_PLUG_DEVICES}
-
-# Install dependencies
-RUN uv sync --frozen --no-dev
-
-# Expose Prometheus port
 EXPOSE ${PROMETHEUS_PORT}
 
-# Start the Prometheus exporter
-ENTRYPOINT ["sh", "-c", "uv run prom-exporter --prometheus-port ${PROMETHEUS_PORT}${TAPO_PLUG_DEVICES:+ --tapo-plug-devices $TAPO_PLUG_DEVICES}"]
+# Runtime reads its environment directly; exec form forwards shutdown signals.
+ENTRYPOINT ["prom-exporter"]

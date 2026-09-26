@@ -6,10 +6,10 @@ This project uses `uv` with a checked-in `uv.lock`.
 
 ```sh
 # Development environment
-uv sync --frozen
+uv sync --locked
 
 # Runtime-only environment
-uv sync --frozen --no-dev
+uv sync --locked --no-dev
 ```
 
 ## Run the Exporter
@@ -40,3 +40,22 @@ At startup, the exporter logs whether automatic polling is enabled or disabled f
 Scrape endpoint:
 
 - `http://localhost:8090/metrics`
+
+## Development Checks
+
+The development environment includes `prek` for Git hooks, `ty` for type checking, and SlipCover
+for coverage collection. Python 3.11 through 3.14 are tested in CI.
+
+```sh
+uv run --locked prek install
+uv run --locked pytest
+uv run --locked ty check
+uv run --locked prek run --all-files
+make coverage
+```
+
+`uv run --locked pytest` and `make test` run tests in parallel with pytest-xdist, using up to four
+workers by default. Pass `-n 2` to pytest to choose a worker count, or `-n 0` for serial debugging.
+`make coverage` uses the same parallel settings under SlipCover, merges worker coverage, and
+writes `coverage.xml` and `coverage.svg`.
+SlipCover currently requires Python older than 3.15.

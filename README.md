@@ -49,10 +49,10 @@ This repo is set up to use `uv` and a checked-in `uv.lock`.
 
 ```sh
 # Development (includes the dev dependency group by default)
-uv sync --frozen
+uv sync --locked
 
 # Minimal runtime environment
-uv sync --frozen --no-dev
+uv sync --locked --no-dev
 ```
 
 ## Running
@@ -193,8 +193,9 @@ docker run --rm \
   pyprom-exporters:latest
 ```
 
-The container entrypoint runs `uv run prom-exporter` and forwards `PROMETHEUS_PORT` and
-`TAPO_PLUG_DEVICES` into CLI flags.
+The container runs `prom-exporter` directly, reads the same environment overrides as the local CLI,
+and forwards shutdown signals to the exporter. Additional CLI arguments can be appended to
+`docker run`; they take precedence over environment variables.
 
 ## Troubleshooting
 
@@ -209,16 +210,107 @@ The container entrypoint runs `uv run prom-exporter` and forwards `PROMETHEUS_PO
 
 ## Development
 
+Install the development dependencies with `uv sync --locked`. The hook runner is `prek`; it uses
+`.pre-commit-config.yaml` and the Python tools from the locked project environment.
+
 ```sh
-# pytest - for tests
-uv run pytest
-# ruff - for linting and formatting
-uv run ruff check .
-# format with ruff (or your editor integration)
-uv run ruff format .
-# prek - for running all configured pre-commit hooks (ruff, isort, etc.)
-uv run prek run --all-files
+# Install the Git hook once per checkout.
+uv run --locked prek install
+
+# Run tests.
+uv run --locked pytest
+
+# Check types, including annotated and unannotated functions, with ty.
+uv run --locked ty check
+
+# Run Ruff linting and formatting.
+uv run --locked ruff check .
+uv run --locked ruff format .
+
+# Run all configured hooks.
+uv run --locked prek run --all-files
 ```
+
+Ruff replaces Pylint and enables all stable and preview lint rules with `select = ["ALL"]`,
+`preview = true`, and NumPy-style docstrings. The only global rule exception is
+`missing-trailing-comma` (`COM812`), because Ruff's formatter owns trailing commas. Test-only exceptions
+permit pytest assertions, literal expected values, and internal-state regression checks. Standalone
+Sphinx configuration is exempt from the package-directory rule. Individual source suppressions are
+limited to documented cases such as optional imports, safe credential-error reporting, and retry
+jitter. Blanket and unused suppressions are checked.
+
+Pytest uses [pytest-xdist](https://pytest-xdist.readthedocs.io/en/stable/distribution.html) to run
+tests in parallel by default, including `make test` and CI. Automatic worker selection is capped
+at four processes to bound startup and memory overhead; work stealing balances uneven test times.
+Use `uv run --locked pytest -n 2` to choose a worker count or `uv run --locked pytest -n 0` for
+serial debugging. Worker startup can outweigh parallelism benefits for small test selections.
+
+CI tests Python 3.11, 3.12, 3.13, and 3.14. Ruff and ty target the minimum supported version, 3.11.
+Sphinx 9.0.4 is used on Python 3.11; Python 3.12+ uses Sphinx 9.1 or later.
+
+### Performance diagnostics
+
+The offline benchmark in `src/pyprom_exporters/benchmarks/scalability.py` measures discovery,
+update, serialization, failure recovery, and memory retention using simulated devices. From a
+repository checkout, run:
+
+```sh
+uv run --locked benchmark
+
+# Equivalent command:
+make benchmark
+
+# A smaller run with explicit fleet sizes, concurrency limits, and simulated I/O latency:
+uv run --locked benchmark --sizes 1 10 100 --concurrency 1 10 --latency-ms 1
+
+# Show all options:
+uv run --locked benchmark --help
+```
+
+The defaults cover 1, 10, 100, and 1,000 devices at concurrency limits of 1, 10, and 50, with 1 ms
+of simulated latency per I/O operation. Each successful run prints the paths to two files in a new
+UTC-stamped directory with a unique suffix:
+
+```text
+report/
+  <UTC-timestamp>-<unique-suffix>/
+    report.html
+    metrics.json
+```
+
+The root `report/` directory is ignored by Git and excluded from Docker builds. Previous runs are
+preserved. Open `report.html` directly in a browser: its styles and data are embedded, so it works
+offline and can be shared as a single file. `metrics.json` contains the complete raw metrics for
+further analysis. Both include the environment and workload settings for reproducibility.
+Use `--output-dir /path/to/reports` to choose another output parent; relative paths are resolved
+from the current working directory. Only the repository's root `report/` is ignored automatically.
+
+The report covers healthy devices, authentication failures, transient retries, missing hosts,
+concurrency and task counts, and Python allocation measurements. Timing and memory measurements
+run separately to keep allocation tracing out of the timing results. These measurements
+characterize application overhead; they do not certify physical fleet capacity.
+
+### Coverage
+
+Coverage collection uses [SlipCover](https://github.com/plasma-umass/slipcover). Its native Cobertura
+XML output feeds the coverage badge generator. SlipCover activates in each pytest-xdist worker
+and merges their coverage automatically, so coverage runs use the same parallel defaults:
+
+```sh
+uv run --locked python -m slipcover --source src/pyprom_exporters --xml --out coverage.xml -m pytest
+uv run --locked genbadge coverage -i coverage.xml -o coverage.svg -l
+
+# Equivalent command:
+make coverage
+```
+
+SlipCover currently supports Python 3.11 through 3.14 in this project. Its dependency is conditional
+so the rest of the development environment remains installable on newer Python versions.
+CI uploads coverage reports for each tested Python version and updates the checked-in badge only
+after successful checks on `main`.
+
+Pytest can report `PytestAssertRewriteWarning` for the already imported `slipcover` package.
+This concerns assertion rewriting in the tool itself and does not affect application coverage.
 
 ## Documentation
 
@@ -226,7 +318,7 @@ Documentation is generated with Sphinx using Markdown (`MyST`) sources in `docs/
 
 ```sh
 # Build HTML docs locally with uv
-uv run docs
+uv run --locked docs
 
 # Build HTML docs locally with make
 make docs
