@@ -52,13 +52,10 @@ def make_exporter(
     Returns
     -------
     TapoPowerPlugPrometheusExporter
-        Exporter initialized with fake devices and their update factories.
+        Exporter initialized with the current fake-device inventory.
     """
     exporter = TapoPowerPlugPrometheusExporter(loop, TapoExporterOptions(**options))
     exporter.discovered_devices = {device.host: cast("Device", device) for device in devices}
-    exporter._update_device_factories = [
-        lambda device=device: exporter._update_device(cast("Device", device), None) for device in devices
-    ]
     return exporter
 
 
@@ -316,12 +313,17 @@ def test_one_disconnect_failure_does_not_skip_other_sessions(monkeypatch: pytest
         good = FakeDevice("10.0.0.1", "good", make_features())
         bad = FakeDevice("10.0.0.2", "bad", make_features())
         good.disconnect = AsyncMock()
-        bad.disconnect = AsyncMock(side_effect=OSError("disconnect failure"))
+        bad.disconnect = AsyncMock(side_effect=[OSError("disconnect failure")] * 3 + [None])
         exporter = make_exporter(asyncio.get_running_loop(), [bad, good])
         await exporter.cleanup()
+        assert exporter._pending_disconnects == {id(bad): bad}
+        assert not exporter._cleanup_complete
+        await exporter.cleanup()
+        assert not exporter._pending_disconnects
+        assert exporter._cleanup_complete
         await exporter.cleanup()
         good.disconnect.assert_awaited_once()
-        assert bad.disconnect.await_count == 3
+        assert bad.disconnect.await_count == 4
 
     asyncio.run(exercise())
 
@@ -424,7 +426,6 @@ def test_offline_configured_device_is_rediscovered_after_cooldown(monkeypatch: p
         await exporter.discover()
         await exporter.update_and_collect()
         assert discover.await_count == 1
-        exporter._next_discovery_time = 0
         exporter._pending_hosts[device.host] = 0
         await exporter.update_and_collect()
         assert discover.await_count == 2
@@ -607,15 +608,12 @@ def test_cleanup_releases_device_metrics_and_recovery_state(monkeypatch: pytest.
         await exporter.update_and_collect()
         assert list(exporter.collect())
         assert exporter._last_successful_updates
-        assert exporter._auth_failed_devices
-        assert exporter._failed_devices
+        assert exporter._failed_devices == {unauthorized.host, unavailable.host}
         assert exporter._pending_hosts
         await exporter.cleanup()
         assert not list(exporter.collect())
         assert not exporter.discovered_devices
-        assert not exporter._update_device_factories
         assert not exporter._last_successful_updates
-        assert not exporter._auth_failed_devices
         assert not exporter._failed_devices
         assert not exporter._pending_hosts
         assert exporter._refresh_future is None
@@ -660,7 +658,6 @@ def test_cancelled_cleanup_can_retry_unfinished_disconnect() -> None:
         await asyncio.wait_for(exporter.cleanup(), timeout=2)
         assert device.disconnect.await_count == 2
         assert not exporter.discovered_devices
-        assert not exporter._update_device_factories
         assert not exporter._last_successful_updates
         assert not list(exporter.collect())
         await exporter.cleanup()
@@ -696,7 +693,6 @@ def test_concurrent_cleanup_waits_for_single_disconnect() -> None:
             await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
         device.disconnect.assert_awaited_once()
         assert not exporter.discovered_devices
-        assert not exporter._update_device_factories
 
     asyncio.run(exercise())
 

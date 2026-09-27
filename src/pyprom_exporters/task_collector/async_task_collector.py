@@ -9,10 +9,10 @@ import asyncio
 import math
 import random
 from itertools import chain, islice
-from typing import TYPE_CHECKING, Literal, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, TypeVar, cast, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable, Iterator
 
 T = TypeVar("T")
 
@@ -111,10 +111,42 @@ def _validate_options(
         raise TypeError(message)
 
 
-def _cancel_owner(owner: asyncio.Task[object] | None) -> None:
-    """Propagate child cancellation without repeating an existing cancellation request."""
-    if owner is not None and not owner.cancelling():
-        owner.cancel()
+async def _run_bounded(
+    factories: Iterable[Callable[[], Awaitable[T]]],
+    run: Callable[[Callable[[], Awaitable[T]]], Awaitable[T | Exception]],
+    concurrency: int,
+) -> list[T | Exception]:
+    """Run a lazy worker pool while reserving result slots in input order.
+
+    Returns
+    -------
+    list[T | Exception]
+        Completed results in input order, including exceptions only if ``run`` returns them.
+
+    """
+    # Keep the number of asyncio tasks bounded as well as the number of active
+    # operations. A semaphore alone would allocate a task for every factory.
+    results: list[T | Exception | None] = []
+
+    def reserve_results() -> Iterator[tuple[int, Callable[[], Awaitable[T]]]]:
+        for index, factory in enumerate(factories):
+            results.append(None)
+            yield index, factory
+
+    indexed_factories = reserve_results()
+
+    async def _worker(first: tuple[int, Callable[[], Awaitable[T]]]) -> None:
+        for index, factory in chain((first,), indexed_factories):
+            results[index] = await run(factory)
+
+    async with asyncio.TaskGroup() as task_group:
+        workers = [task_group.create_task(_worker(first)) for first in islice(indexed_factories, concurrency)]
+    for worker in workers:
+        # TaskGroup does not raise when a child cancels itself. Do not return
+        # incomplete results in that case.
+        worker.result()
+    # Every reserved slot is filled before successful exit; cancellation never returns partial results.
+    return cast("list[T | Exception]", results)
 
 
 @overload
@@ -224,6 +256,11 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
     )
 
     owner = asyncio.current_task()
+    if owner is not None and owner.cancelling():
+        # Deliver a request already pending at entry before interpreting its count
+        # as historical state or consuming factories. Handled requests survive this yield.
+        await asyncio.sleep(0)
+    initial_cancellations = owner.cancelling() if owner is not None else 0
 
     async def _run(factory: Callable[[], Awaitable[T]]) -> T | Exception:
         try:
@@ -238,7 +275,9 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
         except asyncio.CancelledError:
             # TaskGroup treats a cancelled child as normal completion. Cancel
             # the owner so independent child cancellation also joins siblings.
-            _cancel_owner(owner)
+            # A handled cancellation from an earlier operation may still be counted.
+            if owner is not None and owner.cancelling() <= initial_cancellations:
+                owner.cancel()
             raise
         except Exception as exc:
             if return_exceptions:
@@ -250,19 +289,4 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
             tasks = [task_group.create_task(_run(factory)) for factory in factories]
         return [task.result() for task in tasks]
 
-    # Keep the number of asyncio tasks bounded as well as the number of active
-    # operations. A semaphore alone would allocate a task for every factory.
-    indexed_factories = enumerate(factories)
-    results: dict[int, T | Exception] = {}
-
-    async def _worker(first: tuple[int, Callable[[], Awaitable[T]]]) -> None:
-        for index, factory in chain((first,), indexed_factories):
-            results[index] = await _run(factory)
-
-    async with asyncio.TaskGroup() as task_group:
-        workers = [task_group.create_task(_worker(first)) for first in islice(indexed_factories, concurrency)]
-    for worker in workers:
-        # TaskGroup does not raise when a child cancels itself. Do not return
-        # incomplete results in that case.
-        worker.result()
-    return [results[index] for index in range(len(results))]
+    return await _run_bounded(factories, _run, concurrency)

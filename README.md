@@ -260,7 +260,7 @@ Sphinx 9.0.4 is used on Python 3.11; Python 3.12+ uses Sphinx 9.1 or later.
 ### Performance diagnostics
 
 The offline benchmark in `src/pyprom_exporters/benchmarks/scalability.py` measures discovery,
-update, serialization, failure recovery, and memory retention using simulated devices. From a
+update, cached serialization, failure recovery, and memory retention using simulated devices. From a
 repository checkout, run:
 
 ```sh
@@ -275,6 +275,10 @@ uv run --locked benchmark --sizes 1 10 100 --concurrency 1 10 --latency-ms 1
 # Show all options:
 uv run --locked benchmark --help
 ```
+
+Serialization reads an existing snapshot on the exporter loop; it excludes live refresh waiting
+and HTTP serving. The JSON records `settings.serialization_scope: "cached_snapshot"`, and the
+HTML report labels this measurement explicitly.
 
 The defaults cover 1, 10, 100, and 1,000 devices at concurrency limits of 1, 10, and 50, with 1 ms
 of simulated latency per I/O operation. Each successful run prints the paths to two files in a new

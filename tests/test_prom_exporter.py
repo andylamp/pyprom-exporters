@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from kasa import Credentials
+from kasa.exceptions import AuthenticationError
 from omegaconf import OmegaConf
 from prometheus_client import CollectorRegistry
 from prometheus_client.metrics_core import GaugeMetricFamily
@@ -23,7 +24,7 @@ from pyprom_exporters import prom_exporter as runtime
 from pyprom_exporters.config import PromExporterConfig
 from pyprom_exporters.exporters import tapo as tapo_module
 from pyprom_exporters.exporters.base import BasePrometheusCollector
-from pyprom_exporters.exporters.tapo import TapoExporterOptions
+from pyprom_exporters.exporters.tapo import TapoExporterOptions, TapoPowerPlugPrometheusExporter
 from tests.conftest import FakeDevice, make_features
 
 
@@ -259,7 +260,8 @@ def test_main_shuts_down_http_server(tmp_path: Path, monkeypatch: pytest.MonkeyP
         args.append("--no-write-config")
     monkeypatch.setattr("sys.argv", args)
     collector = StubCollector()
-    monkeypatch.setattr(runtime, "tapo_exporter_init", AsyncMock(return_value=collector))
+    monkeypatch.setattr(runtime, "_create_tapo_exporter", Mock(return_value=collector))
+    monkeypatch.setattr(runtime, "_initialize_tapo_exporter", AsyncMock(return_value=collector))
     event = threading.Event()
     monkeypatch.setattr(runtime, "Event", lambda: event)
     server, thread = Mock(), Mock()
@@ -312,5 +314,97 @@ def test_initialization_publishes_discovery_readings(monkeypatch: pytest.MonkeyP
         finally:
             await exporter.cleanup()
         assert device.disconnect_calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_shutdown_owns_startup_result_before_cross_thread_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finished initializer cannot lose its collector when the result future is cancelled."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["prom-exporter", "--config", str(config_path), "--no-write-config"])
+    monkeypatch.setattr(runtime.os, "getenv", lambda _key, default=None: default)
+    device = FakeDevice("192.0.2.1", "plug", make_features())
+    monkeypatch.setattr(tapo_module.Discover, "discover", AsyncMock(return_value={device.host: device}))
+    terminate = threading.Event()
+    release_delivery = threading.Event()
+    monkeypatch.setattr(runtime, "Event", lambda: terminate)
+    register = Mock()
+    monkeypatch.setattr(runtime, "register_exporters", register)
+    initialize = runtime._initialize_tapo_exporter
+    wait_for_startup = runtime._wait_for_startup
+    owned: list[TapoPowerPlugPrometheusExporter] = []
+
+    def hold_result_delivery() -> None:
+        terminate.set()
+        assert release_delivery.wait(timeout=5)
+
+    async def initialize_before_delivery(
+        exporter: TapoPowerPlugPrometheusExporter,
+    ) -> TapoPowerPlugPrometheusExporter:
+        result = await initialize(exporter)
+        owned.append(result)
+        # This callback runs before asyncio copies the task result to its concurrent Future.
+        asyncio.get_running_loop().call_soon(hold_result_delivery)
+        return result
+
+    def cancel_before_delivery(
+        future: Future[TapoPowerPlugPrometheusExporter], event: threading.Event
+    ) -> TapoPowerPlugPrometheusExporter | None:
+        try:
+            result = wait_for_startup(future, event)
+            assert result is None
+            assert future.cancelled()
+            assert len(owned) == 1
+        finally:
+            release_delivery.set()
+        return result
+
+    monkeypatch.setattr(runtime, "_initialize_tapo_exporter", initialize_before_delivery)
+    monkeypatch.setattr(runtime, "_wait_for_startup", cancel_before_delivery)
+    runtime.main()
+    register.assert_not_called()
+    assert device.disconnect_calls == 1
+    assert owned[0]._closed
+    assert owned[0]._asyncio_loop.is_closed()
+
+
+def test_cli_devices_split_quoted_spaces_and_commas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Device arguments accept quoted lists, separate arguments, and comma separators together."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["prom-exporter", "--tapo-plug-devices", "192.0.2.1 192.0.2.2", "192.0.2.3, 192.0.2.4"],
+    )
+    app = PromExporterConfig()
+    runtime.apply_cli_overrides(app, runtime.parse_args())
+    assert app.exporters.tapo.devices == ["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"]
+
+
+@pytest.mark.parametrize("with_update", [False, True])
+def test_initialization_attempts_background_readings_once(
+    monkeypatch: pytest.MonkeyPatch, *, with_update: bool
+) -> None:
+    """Background startup obtains readings once even when authentication fails."""
+    device = FakeDevice("192.0.2.1", "plug", make_features())
+    update = AsyncMock(side_effect=AuthenticationError("Simulated authentication failure"))
+    device.update = update
+    monkeypatch.setattr(tapo_module.Discover, "discover", AsyncMock(return_value={device.host: device}))
+    options = TapoExporterOptions()
+    assert options.prometheus_options is not None
+    assert options.discovery_options is not None
+    options.prometheus_options.refresh_interval = 15
+    options.discovery_options.with_update = with_update
+
+    async def exercise() -> None:
+        exporter = await runtime.tapo_exporter_init(asyncio.get_running_loop(), options)
+        try:
+            update.assert_awaited_once()
+            metrics = {metric.name: metric for metric in exporter.collect()}
+            assert metrics["tapo_discovered_devices"].samples[0].value == 1
+            assert not metrics["current_consumption"].samples
+        finally:
+            await exporter.cleanup()
 
     asyncio.run(exercise())

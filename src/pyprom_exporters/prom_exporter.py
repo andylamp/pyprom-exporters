@@ -24,7 +24,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from prometheus_client import start_http_server
 from prometheus_client.registry import REGISTRY
 
-from pyprom_exporters.config import PromExporterConfig
+from pyprom_exporters.config import DEFAULT_CONFIG_FILE, DEFAULT_LOG_LEVEL, PromExporterConfig
 from pyprom_exporters.exporters.tapo import (
     DEFAULT_REFRESH_INTERVAL,
     TapoDiscoveryOptions,
@@ -162,7 +162,7 @@ def parse_args() -> argparse.Namespace:
 
     """
     parser = argparse.ArgumentParser(description="Run the pyprom-exporters Prometheus exporter.")
-    parser.add_argument("--config", default=PromExporterConfig().config_file, help="Path to the YAML configuration.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_FILE, help="Path to the YAML configuration.")
     parser.add_argument("--no-write-config", action="store_true", help="Do not persist configuration on startup.")
     parser.add_argument(
         "--tapo-plug-devices",
@@ -187,14 +187,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def _split_devices(values: list[str]) -> list[str]:
-    devices: list[str] = []
-    for value in values:
-        devices.extend([item.strip() for item in value.split(",") if item.strip()])
-    return devices
+    return [device for value in values for device in value.replace(",", " ").split()]
 
 
-def _split_devices_from_string(value: str) -> list[str]:
-    return [item for item in value.replace(",", " ").split() if item.strip()]
+def _apply_credential_overrides(options: TapoExporterOptions, username: str | None, password: str | None) -> None:
+    """Replace supplied credential fields while preserving every unspecified field."""
+    if username is None and password is None:
+        return
+    if options.discovery_options is None:
+        options.discovery_options = TapoDiscoveryOptions()
+    credentials = options.discovery_options.credentials
+    options.discovery_options.credentials = Credentials(
+        username=username if username is not None else (credentials.username if credentials else ""),
+        password=password if password is not None else (credentials.password if credentials else ""),
+    )
 
 
 def apply_env_overrides(app_config: PromExporterConfig) -> None:
@@ -212,18 +218,9 @@ def apply_env_overrides(app_config: PromExporterConfig) -> None:
 
     env_devices = os.getenv("TAPO_PLUG_DEVICES")
     if env_devices:
-        app_config.exporters.tapo.devices = _split_devices_from_string(env_devices)
+        app_config.exporters.tapo.devices = _split_devices([env_devices])
 
-    env_username = os.getenv("TAPO_USERNAME")
-    env_password = os.getenv("TAPO_PASSWORD")
-    if env_username is not None or env_password is not None:
-        if app_config.exporters.tapo.discovery_options is None:
-            app_config.exporters.tapo.discovery_options = TapoDiscoveryOptions()
-
-        creds = app_config.exporters.tapo.discovery_options.credentials
-        username = env_username if env_username is not None else (creds.username if creds else "")
-        password = env_password if env_password is not None else (creds.password if creds else "")
-        app_config.exporters.tapo.discovery_options.credentials = Credentials(username=username, password=password)
+    _apply_credential_overrides(app_config.exporters.tapo, os.getenv("TAPO_USERNAME"), os.getenv("TAPO_PASSWORD"))
 
 
 def apply_cli_overrides(app_config: PromExporterConfig, args: argparse.Namespace) -> None:
@@ -237,14 +234,7 @@ def apply_cli_overrides(app_config: PromExporterConfig, args: argparse.Namespace
     if args.tapo_plug_devices is not None:
         app_config.exporters.tapo.devices = _split_devices(args.tapo_plug_devices)
 
-    if args.tapo_username is not None or args.tapo_password is not None:
-        if app_config.exporters.tapo.discovery_options is None:
-            app_config.exporters.tapo.discovery_options = TapoDiscoveryOptions()
-
-        creds = app_config.exporters.tapo.discovery_options.credentials
-        username = args.tapo_username if args.tapo_username is not None else (creds.username if creds else "")
-        password = args.tapo_password if args.tapo_password is not None else (creds.password if creds else "")
-        app_config.exporters.tapo.discovery_options.credentials = Credentials(username=username, password=password)
+    _apply_credential_overrides(app_config.exporters.tapo, args.tapo_username, args.tapo_password)
 
 
 def _diff_config_values(current: object, defaults: object) -> object:
@@ -498,16 +488,16 @@ def log_startup_summary(collectors: list[BasePrometheusCollector]) -> None:
             )
 
 
-async def tapo_exporter_init(
+def _create_tapo_exporter(
     asyncio_loop: asyncio.AbstractEventLoop,
     options: TapoExporterOptions,
 ) -> TapoPowerPlugPrometheusExporter:
-    """Create and return a Tapo Power Plug Prometheus Exporter.
+    """Construct the collector before asynchronous initialization transfers control.
 
     Returns
     -------
     TapoPowerPlugPrometheusExporter
-        The initialized exporter with discovery and optional background polling started.
+        An owned collector whose device initialization has not started.
 
     """
     if options.discovery_options and options.discovery_options.credentials is None:
@@ -515,20 +505,50 @@ async def tapo_exporter_init(
             username=os.getenv(options.discovery_options.tapo_username_env_key, ""),
             password=os.getenv(options.discovery_options.tapo_password_env_key, ""),
         )
+    return TapoPowerPlugPrometheusExporter(options=options, asyncio_loop=asyncio_loop)
 
-    tapo_exporter = TapoPowerPlugPrometheusExporter(options=options, asyncio_loop=asyncio_loop)
+
+async def _initialize_tapo_exporter(
+    tapo_exporter: TapoPowerPlugPrometheusExporter,
+) -> TapoPowerPlugPrometheusExporter:
+    """Initialize an owned collector and close it if initialization fails.
+
+    Returns
+    -------
+    TapoPowerPlugPrometheusExporter
+        The initialized exporter with discovery and optional background polling started.
+
+    """
+    options = tapo_exporter.options
     try:
         await tapo_exporter.discover()
         refresh_interval = (
             options.prometheus_options.refresh_interval if options.prometheus_options else DEFAULT_REFRESH_INTERVAL
         )
-        if refresh_interval is not None:
+        if refresh_interval is not None and (
+            options.discovery_options is None or not options.discovery_options.with_update
+        ):
             await tapo_exporter.update_and_collect()
         await tapo_exporter.start_background_updates(refresh_interval)
     except BaseException:
         await tapo_exporter.cleanup()
         raise
     return tapo_exporter
+
+
+async def tapo_exporter_init(
+    asyncio_loop: asyncio.AbstractEventLoop,
+    options: TapoExporterOptions,
+) -> TapoPowerPlugPrometheusExporter:
+    """Create and initialize a Tapo Power Plug Prometheus Exporter.
+
+    Returns
+    -------
+    TapoPowerPlugPrometheusExporter
+        The initialized exporter with discovery and optional background polling started.
+
+    """
+    return await _initialize_tapo_exporter(_create_tapo_exporter(asyncio_loop, options))
 
 
 async def _cancel_pending_tasks() -> None:
@@ -623,10 +643,7 @@ def main() -> None:
     """
     args = parse_args()
     early_log_level = (
-        args.log_level
-        or os.getenv("PYPROM_EXPORTERS_LOG_LEVEL")
-        or os.getenv("LOG_LEVEL")
-        or PromExporterConfig().log_level
+        args.log_level or os.getenv("PYPROM_EXPORTERS_LOG_LEVEL") or os.getenv("LOG_LEVEL") or DEFAULT_LOG_LEVEL
     )
     configure_logging(early_log_level, force=True)
     app_config = _configure_app(args)
@@ -643,14 +660,11 @@ def main() -> None:
         graceful_exit_handler(termination_sig)
         loop_thread.start()
         logger.info("Starting Tapo Prometheus Exporter...")
-        tapo_future = asyncio.run_coroutine_threadsafe(
-            tapo_exporter_init(exporter_loop, app_config.exporters.tapo), exporter_loop
-        )
-        tapo_exporter = _wait_for_startup(tapo_future, termination_sig)
-        if tapo_exporter is None:
-            return
+        # Own the collector before startup can complete or be cancelled on the other thread.
+        tapo_exporter = _create_tapo_exporter(exporter_loop, app_config.exporters.tapo)
         exporter_list.append(tapo_exporter)
-        if termination_sig.is_set():
+        tapo_future = asyncio.run_coroutine_threadsafe(_initialize_tapo_exporter(tapo_exporter), exporter_loop)
+        if _wait_for_startup(tapo_future, termination_sig) is None or termination_sig.is_set():
             return
         http_server, http_thread = register_exporters(app_config.prometheus_port, exporter_list)
         log_startup_summary(exporter_list)

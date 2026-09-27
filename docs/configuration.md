@@ -86,6 +86,9 @@ Override precedence is:
 - Broadcast discovery is performed at startup by `python-kasa`; newly added devices require
   rediscovery or a restart unless their hosts are explicitly configured. The configured-host worker
   bound does not control tasks created internally by broadcast discovery.
+- Configured hostnames and broadcast IPs with the same valid MAC address share one device session
+  and one set of measurements. The first retained session supplies the `host` label. If a usable MAC
+  is unavailable, deduplication falls back to the device host; avoid listing multiple aliases then.
 - `tapo_discovered_devices` reports the discovered inventory, including temporarily failed devices;
   it is not a count of healthy devices. A successful HTTP response can contain the fallback snapshot,
   and no metric currently reports its age; consult timeout and update-failure logs for diagnosis.
@@ -95,6 +98,9 @@ Labels must include `host` to keep device series distinct. Optional labels are `
 `device_type`, `firmware_version`, and `hardware_version`.
 An empty `supported_device_families: {}` or `per_device_family_metrics: {plug: {}}` disables plug
 measurement families; the inventory metric remains available.
+Nonempty metric maps override and merge with defaults: omitted entries remain enabled. Removing
+one default entry from a Python configuration dictionary is therefore not preserved as a per-metric
+disablement when the configuration is written and reloaded.
 
 Energy metrics `current_consumption_today` and `current_month_consumption` are in watt-hours.
 The previous implementation returned raw kilo-watt-hour values despite describing them as
@@ -148,5 +154,6 @@ Results cover healthy and failing devices, retries, missing-host recovery, concu
 asyncio tasks, serialization costs, and Python allocations. The reported scrape timing measures
 serialization of a completed snapshot on the asyncio loop; it excludes live refresh waits, HTTP
 request handling, and network transfer. Use the update and serialization timings separately when
-assessing live-mode costs. Memory tracing runs separately from
-timing measurements. Simulated device measurements do not establish physical-device capacity.
+assessing live-mode costs. JSON records `settings.serialization_scope: "cached_snapshot"`.
+Memory tracing runs separately from timing measurements. Simulated device measurements do not
+establish physical-device capacity.

@@ -14,8 +14,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import islice
-from typing import TYPE_CHECKING, TypeVar
+from itertools import chain, islice
+from typing import TYPE_CHECKING
 
 from kasa import Credentials, Device
 from kasa.discover import DeviceDict, Discover, OnDiscoveredCallable, OnDiscoveredRawCallable, OnUnsupportedCallable
@@ -26,16 +26,15 @@ from . import run_tasks_with_retry
 from .base import BasePrometheusCollector, BasePrometheusOptions
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Iterable
     from concurrent.futures import Future
 
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
-
 DEFAULT_REFRESH_INTERVAL: int | None = None
 REDISCOVERY_INTERVAL: float = 30.0
+MAC_HEX_LENGTH = 12
 
 
 @dataclass
@@ -425,14 +424,13 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         super().__init__()
         self.options = options or TapoExporterOptions()
         self.discovered_devices: DeviceDict | None = None
-        self._update_device_factories: list[Callable[[], Awaitable[TapoDeviceUpdateResult]]] | None = None
         self._asyncio_loop = asyncio_loop
         self.callbacks = callbacks or TapoCallbacks()
-        self._auth_failed_devices: set[str] = set()
         self._failed_devices: set[str] = set()
         self._last_successful_updates: dict[str, float] = {}
         self._pending_hosts: dict[str, float] = {}
-        self._next_discovery_time = 0.0
+        # Retired sessions remain owned until closing them actually succeeds.
+        self._pending_disconnects: dict[int, Device] = {}
         self._metrics_lock = threading.Lock()
         self._scrape_refresh_lock = threading.Lock()
         self._refresh_future: Future[None] | None = None
@@ -468,11 +466,14 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         async with self._device_lock:
             if self._closed:
                 return
+            # Retired inventory must not remain visible if rediscovery fails or is cancelled.
+            with self._metrics_lock:
+                self._latest_metrics = []
             await self._disconnect_devices()
             self.discovered_devices = {}
             self._last_successful_updates.clear()
-            self._auth_failed_devices.clear()
             self._failed_devices.clear()
+            self._pending_hosts = dict.fromkeys(sorted(set(self.options.devices)), 0.0)
             options = self.options.discovery_options
             if options is None:
                 message = "Discovery options are not set"
@@ -518,24 +519,30 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         if options is None or self.discovered_devices is None:
             return
 
+        devices = self.discovered_devices
+        identities: dict[str, Device] = {}
+        for device in devices.values():
+            if (identity := self._device_identity(device)) is not None:
+                identities.setdefault(identity, device)
+
         async def discover_host(host: str) -> None:
-            device = await Discover.discover_single(
-                host=host,
-                credentials=options.credentials,
-                discovery_timeout=options.discovery_timeout,
-                port=options.port,
-                timeout=options.timeout,
-                on_discovered_raw=self.callbacks.on_discovered_raw,
-                on_unsupported=self.callbacks.on_unsupported,
-            )
-            if device is not None and self.discovered_devices is not None:
-                # Hostnames and IP addresses may refer to the same device.
-                if device.host in self.discovered_devices:
-                    if device is not self.discovered_devices[device.host]:
-                        await device.disconnect()
-                else:
-                    self.discovered_devices[device.host] = device
-                self._pending_hosts.pop(host, None)
+            try:
+                device = await Discover.discover_single(
+                    host=host,
+                    credentials=options.credentials,
+                    discovery_timeout=options.discovery_timeout,
+                    port=options.port,
+                    timeout=options.timeout,
+                    on_discovered_raw=self.callbacks.on_discovered_raw,
+                    on_unsupported=self.callbacks.on_unsupported,
+                )
+                if device is not None:
+                    await self._retain_discovered_device(host, device, devices, identities)
+            except Exception as exc:  # ruff: ignore[blind-except]
+                # Isolate expected per-host failures without retaining traceback graphs
+                # in worker results or in queued/buffering logging handlers.
+                error_message = str(exc)
+                logger.warning("Could not discover configured device %s: %s", host, error_message)
 
         now = time.monotonic()
         hosts = (
@@ -548,53 +555,88 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             ]
         )
         try:
-            results = await run_tasks_with_retry(
-                [lambda host=host: discover_host(host) for host in hosts],
+            await run_tasks_with_retry(
+                (lambda host=host: discover_host(host) for host in hosts),
                 concurrency=self.options.max_concurrent_devices,
                 attempts=1,
-                return_exceptions=True,
             )
-            for host, result in zip(hosts, results, strict=True):
-                if isinstance(result, Exception):
-                    logger.warning("Could not discover configured device %s: %s", host, result)
         finally:
             retry_at = time.monotonic() + REDISCOVERY_INTERVAL
             for host in hosts:
                 if host in self._pending_hosts:
                     self._pending_hosts.pop(host)
                     self._pending_hosts[host] = retry_at
-            self._next_discovery_time = next(iter(self._pending_hosts.values()), math.inf)
-            # Cancellation can interrupt discovery after some hosts have succeeded.
-            self._update_device_factories = [
-                lambda device=device: self._update_device(device, self._get_refresh_interval())
-                for device in self.discovered_devices.values()
-            ]
+
+    @staticmethod
+    def _device_identity(device: Device) -> str | None:
+        """Normalize a known hardware address without conflating unknown identities.
+
+        Returns
+        -------
+        str | None
+            Twelve hexadecimal MAC digits, or None when discovery has no valid address.
+
+        """
+        try:
+            mac = getattr(device, "mac", None)
+        except Exception:
+            logger.debug("Device identity is unavailable for %s", device.host, exc_info=True)
+            return None
+        if not isinstance(mac, str):
+            return None
+        identity = mac.replace(":", "").replace("-", "").lower()
+        if (
+            len(identity) != MAC_HEX_LENGTH
+            or identity in {"0" * MAC_HEX_LENGTH, "f" * MAC_HEX_LENGTH}
+            or any(char not in "0123456789abcdef" for char in identity)
+        ):
+            return None
+        return identity
+
+    async def _retain_discovered_device(
+        self, host: str, device: Device, devices: DeviceDict, identities: dict[str, Device]
+    ) -> None:
+        """Keep the first session for a device and own duplicates until their close succeeds."""
+        identity = self._device_identity(device)
+        existing = devices.get(device.host)
+        if existing is None and identity is not None:
+            existing = identities.get(identity)
+        self._pending_hosts.pop(host, None)
+        if existing is None:
+            devices[device.host] = device
+            if identity is not None:
+                identities[identity] = device
+        elif existing is not device and id(device) not in self._pending_disconnects:
+            self._pending_disconnects[id(device)] = device
+            await device.disconnect()
+            self._pending_disconnects.pop(id(device))
 
     async def _update_devices(self) -> None:
         """Refresh devices while allowing healthy devices to survive peer failures."""
         if self._closed or self.discovered_devices is None:
             return
-        if self._pending_hosts and time.monotonic() >= self._next_discovery_time:
+        if time.monotonic() >= next(iter(self._pending_hosts.values()), math.inf):
             await self._discover_configured_devices()
-        if self._update_device_factories is None:
-            return
+        # Derive work and result matching from one inventory snapshot. Retaining
+        # factories separately could reopen orphaned sessions after failed rediscovery.
+        devices = list(self.discovered_devices.values())
+        refresh_interval = self._get_refresh_interval()
         results = await run_tasks_with_retry(
-            self._update_device_factories,
+            (lambda device=device: self._update_device(device, refresh_interval) for device in devices),
             concurrency=self.options.max_concurrent_devices,
             return_exceptions=True,
         )
-        for device, result in zip(self.discovered_devices.values(), results, strict=False):
+        for device, result in zip(devices, results, strict=True):
             if isinstance(result, Exception):
                 self._failed_devices.add(device.host)
                 logger.warning("Update failed for device %s: %s", device.host, result)
                 continue
             if result.host is None or result.auth_failed is None:
                 continue
-            self._failed_devices.discard(result.host)
             if result.auth_failed:
-                self._auth_failed_devices.add(result.host)
+                self._failed_devices.add(result.host)
             else:
-                self._auth_failed_devices.discard(result.host)
+                self._failed_devices.discard(result.host)
 
     async def update(self) -> None:
         """Update devices without overlapping other I/O on their sessions."""
@@ -650,16 +692,21 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             If the caller is cancelled while awaiting the background task.
 
         """
+        caller = asyncio.current_task()
+        if caller is not None and caller.cancelling():
+            # Deliver pending cancellation before treating the count as historical
+            # or interrupting the owned background task.
+            await asyncio.sleep(0)
+        initial_cancellations = caller.cancelling() if caller is not None else 0
         if self._update_task is None:
             return
         self._update_task.cancel()
         try:
             await self._update_task
         except asyncio.CancelledError:
-            # A cancelled child is expected; cancellation of this caller must
-            # still interrupt cleanup and preserve the caller's deadline.
-            current_task = asyncio.current_task()
-            if current_task is not None and current_task.cancelling():
+            # Joining the cancelled child is expected. Only a new cancellation
+            # request should interrupt this caller and preserve its deadline.
+            if caller is not None and caller.cancelling() > initial_cancellations:
                 raise
         self._update_task = None
 
@@ -762,15 +809,21 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
 
     async def _disconnect_devices(self) -> None:
         """Attempt every session close even when another device fails."""
-        devices = list((self.discovered_devices or {}).values())
+        devices = {
+            id(device): device
+            for device in chain((self.discovered_devices or {}).values(), self._pending_disconnects.values())
+        }
         results = await run_tasks_with_retry(
-            [device.disconnect for device in devices],
+            (device.disconnect for device in devices.values()),
             concurrency=self.options.max_concurrent_devices,
             return_exceptions=True,
         )
-        for device, result in zip(devices, results, strict=True):
+        for device, result in zip(devices.values(), results, strict=True):
             if isinstance(result, Exception):
+                self._pending_disconnects[id(device)] = device
                 logger.warning("Disconnect failed for device %s: %s", device.host, result)
+            else:
+                self._pending_disconnects.pop(id(device), None)
 
     async def disconnect(self) -> None:
         """Disconnect all devices after any in-flight update has finished."""
@@ -796,12 +849,10 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 with self._metrics_lock:
                     self._latest_metrics = []
             self.discovered_devices = {}
-            self._update_device_factories = []
             self._last_successful_updates.clear()
-            self._auth_failed_devices.clear()
             self._failed_devices.clear()
             self._pending_hosts.clear()
-            self._cleanup_complete = True
+            self._cleanup_complete = not self._pending_disconnects
 
     def _metric_definitions(self) -> dict[TapoPerPlugMetricType, TapoPlugGaugeMetric]:
         """Return the enabled plug metric definitions.
@@ -866,7 +917,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             else "current_consumption"
         )
         for device in devices.values():
-            if device.host in self._auth_failed_devices or device.host in self._failed_devices:
+            if device.host in self._failed_devices:
                 continue
             try:
                 self._add_device_metrics(device, definitions, families, consumption_key)

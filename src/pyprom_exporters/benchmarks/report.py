@@ -184,8 +184,11 @@ def _timing_columns(*phases: str) -> list[_Column]:
         Wall-time and CPU-time columns for each requested phase.
 
     """
+    titles = {"serialization": "Cached serialization"}
     return [
-        _Column(f"{phase.replace('_', ' ').capitalize()} {clock} (ms)", (phase, f"{clock.lower()}_ms"))
+        _Column(
+            f"{titles.get(phase, phase.replace('_', ' ').capitalize())} {clock} (ms)", (phase, f"{clock.lower()}_ms")
+        )
         for phase in phases
         for clock in ("wall", "CPU")
     ]
@@ -379,8 +382,12 @@ def _methodology() -> str:
 Real exporter scheduling, metric caching, retry logic, cleanup, and Prometheus text serialization run locally.
 No discovery packets, device requests, or real credentials are used.</li>
 <li>Discovery and cleanup each measure one operation. Update times are medians of three refreshes;
-healthy and authentication-failure serialization times are medians of five scrapes. The missing-host
-scenario measures one refresh and one scrape. CPU and wall medians are computed independently.</li>
+healthy and authentication-failure cached serialization times are medians of five serializations.
+The missing-host scenario measures one refresh and one cached serialization.
+CPU and wall medians are computed independently.</li>
+<li>Serialization reads the cached snapshot on the exporter event loop, where collect() skips waiting
+for a refresh to avoid blocking its own loop. No device I/O occurs during serialization. This measures
+cached serialization cost, not live-scrape latency; live-refresh wait time and HTTP transport are excluded.</li>
 <li>Wall time uses a monotonic performance clock; CPU time uses process CPU time. Timings include Python
 overhead and simulated waiting. These are observations without confidence intervals or pass/fail thresholds.</li>
 <li>Scenarios run sequentially to avoid contention between scenarios. Memory tracing runs separately
@@ -389,7 +396,7 @@ from the timing cases, after warmup, with repeated refresh and scrape cycles.</l
 sets a new high, so it is an observation rather than a continuous task-count bound. Peak task counts include
 the benchmark driver; remaining task counts exclude it.</li>
 <li>Configured concurrency bounds overlapping device operations, while metric storage and serialization
-grow with fleet size. A concurrency of zero, if present in imported results, means unlimited concurrency.</li>
+grow with fleet size. The benchmark requires a positive concurrency limit.</li>
 <li>This benchmark measures simulated software overhead. It does not establish physical-device capacity,
 network throughput, Wi-Fi contention, authentication/cryptography cost, HTTP server performance, or behavior
 under real device and network failures. Compare runs on the same machine and Python version; validate
@@ -424,6 +431,7 @@ def render_html(results: Mapping[str, object], *, metrics_filename: str = "metri
             ("Fleet sizes", settings.get("sizes")),
             ("Concurrency limits", settings.get("concurrency")),
             ("Simulated I/O latency (ms)", settings.get("simulated_io_latency_ms")),
+            ("Serialization scope", settings.get("serialization_scope")),
         ],
     )
     exporter = _rows(results.get("exporter"))
@@ -444,7 +452,9 @@ def render_html(results: Mapping[str, object], *, metrics_filename: str = "metri
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Exporter scalability benchmark</title><style>{_STYLE}</style></head>
 <body><header><h1>Exporter scalability benchmark</h1>
-<p class="lead">Simulated fleet measurements for scheduling, refresh, serialization, and cleanup.</p>
+<p class="lead">Simulated fleet measurements for scheduling, refresh, cached serialization, and cleanup.</p>
+<p><strong>Serialization measures the cached snapshot only.</strong>
+Live-refresh wait time and HTTP transport are excluded; these are not live-scrape latency measurements.</p>
 <p class="note">All tables, charts, and raw measurements are embedded in this file. It can be copied
 and opened offline on its own. Timings are milliseconds; memory and payload sizes are bytes.</p>
 <p><a href="{download}" download>Download metrics JSON</a> (adjacent file)</p>

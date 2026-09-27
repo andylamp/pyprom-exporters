@@ -351,44 +351,54 @@ async def measure_memory(count: int, concurrency: int) -> dict[str, object]:
     dict[str, object]
         Allocation snapshots before and after repeated refreshes and cleanup.
 
+    Raises
+    ------
+    RuntimeError
+        If tracemalloc is already active, preserving the caller's tracing session.
+
     """
+    if tracemalloc.is_tracing():
+        message = "Memory measurement requires its own tracemalloc session; tracing is already active."
+        raise RuntimeError(message)
     gc.collect()
     tracemalloc.start()
-    baseline, _ = tracemalloc.get_traced_memory()
-    activity = Activity(0.0)
-    fleet = Fleet(activity)
-    exporter = exporter_for(count, concurrency)
-    with patch("pyprom_exporters.exporters.tapo.Discover.discover_single", fleet.discover):
-        try:
-            await exporter.discover()
-            await exporter.update_and_collect()
-            gc.collect()
-            warm, _ = tracemalloc.get_traced_memory()
-            for _ in range(20):
+    try:
+        baseline, _ = tracemalloc.get_traced_memory()
+        activity = Activity(0.0)
+        fleet = Fleet(activity)
+        exporter = exporter_for(count, concurrency)
+        with patch("pyprom_exporters.exporters.tapo.Discover.discover_single", fleet.discover):
+            try:
+                await exporter.discover()
                 await exporter.update_and_collect()
-                scrape(exporter, 1)
-            gc.collect()
-            final, peak = tracemalloc.get_traced_memory()
-        finally:
-            await exporter.cleanup()
-    gc.collect()
-    cleaned, _ = tracemalloc.get_traced_memory()
-    del exporter
-    gc.collect()
-    released, _ = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    return {
-        "devices": count,
-        "concurrency": concurrency,
-        "repeated_refreshes": 20,
-        "warm_bytes": warm - baseline,
-        "final_bytes": final - baseline,
-        "peak_bytes": peak - baseline,
-        "growth_after_warmup_bytes": final - warm,
-        "after_cleanup_bytes": cleaned - baseline,
-        "after_release_bytes": released - baseline,
-        "remaining_asyncio_tasks": len(asyncio.all_tasks()) - 1,
-    }
+                gc.collect()
+                warm, _ = tracemalloc.get_traced_memory()
+                for _ in range(20):
+                    await exporter.update_and_collect()
+                    scrape(exporter, 1)
+                gc.collect()
+                final, peak = tracemalloc.get_traced_memory()
+            finally:
+                await exporter.cleanup()
+        gc.collect()
+        cleaned, _ = tracemalloc.get_traced_memory()
+        del exporter
+        gc.collect()
+        released, _ = tracemalloc.get_traced_memory()
+        return {
+            "devices": count,
+            "concurrency": concurrency,
+            "repeated_refreshes": 20,
+            "warm_bytes": warm - baseline,
+            "final_bytes": final - baseline,
+            "peak_bytes": peak - baseline,
+            "growth_after_warmup_bytes": final - warm,
+            "after_cleanup_bytes": cleaned - baseline,
+            "after_release_bytes": released - baseline,
+            "remaining_asyncio_tasks": len(asyncio.all_tasks()) - 1,
+        }
+    finally:
+        tracemalloc.stop()
 
 
 async def benchmark(sizes: list[int], concurrency: list[int], latency: float) -> dict[str, object]:
@@ -415,7 +425,12 @@ async def benchmark(sizes: list[int], concurrency: list[int], latency: float) ->
             "platform": platform.platform(),
             "recorded_at": datetime.now(UTC).isoformat(),
         },
-        "settings": {"sizes": sizes, "concurrency": concurrency, "simulated_io_latency_ms": latency * 1000},
+        "settings": {
+            "sizes": sizes,
+            "concurrency": concurrency,
+            "simulated_io_latency_ms": latency * 1000,
+            "serialization_scope": "cached_snapshot",
+        },
         "exporter": exporter_results,
         "retry_collector": retry_results,
         "missing_hosts": await measure_missing(largest, representative_concurrency, latency),

@@ -351,3 +351,80 @@ def test_invalid_exception_types_fail_early(exceptions: object) -> None:
 def test_empty_input(concurrency: int | None) -> None:
     """Empty batches return an empty result list."""
     assert asyncio.run(run_tasks_with_retry([], concurrency=concurrency)) == []
+
+
+@pytest.mark.parametrize("concurrency", [None, 2])
+@pytest.mark.parametrize("prior_failure", [False, True])
+def test_child_cancellation_propagates_after_an_earlier_handled_cancellation(
+    concurrency: int | None, *, prior_failure: bool
+) -> None:
+    """Historical cancellation counts cannot suppress cancellation of a new batch."""
+
+    async def exercise() -> None:
+        owner = asyncio.current_task()
+        assert owner is not None
+        if prior_failure:
+            with pytest.raises(ExceptionGroup):
+                await run_tasks_with_retry([AsyncMock(side_effect=ValueError)], attempts=1)
+        else:
+            owner.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.sleep(0)
+        initial_cancellations = owner.cancelling()
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        watchdog_fired = False
+
+        async def blocked() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def cancelled() -> None:
+            await started.wait()
+            raise asyncio.CancelledError
+
+        def watchdog() -> None:
+            nonlocal watchdog_fired
+            watchdog_fired = True
+            owner.cancel()
+
+        deadline = asyncio.get_running_loop().call_later(2, watchdog)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await run_tasks_with_retry([cancelled, blocked], concurrency=concurrency)
+            assert not watchdog_fired
+            assert stopped.is_set()
+            assert owner.cancelling() == initial_cancellations + 1
+        finally:
+            deadline.cancel()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("concurrency", [None, 2])
+def test_pending_cancellation_is_delivered_before_consuming_factories(concurrency: int | None) -> None:
+    """A caller's pending cancellation must not become a second synthetic request."""
+
+    async def exercise() -> None:
+        owner = asyncio.current_task()
+        assert owner is not None
+        consumed = False
+        operation = AsyncMock(return_value=1)
+
+        def factories() -> Iterator[Callable[[], Awaitable[int]]]:
+            nonlocal consumed
+            consumed = True
+            yield operation
+
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run_tasks_with_retry(factories(), concurrency=concurrency)
+        assert owner.cancelling() == 1
+        assert not consumed
+        operation.assert_not_called()
+        assert len(asyncio.all_tasks()) == 1
+
+    asyncio.run(exercise())

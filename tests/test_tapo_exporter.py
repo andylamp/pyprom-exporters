@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     import pytest
     from kasa import Device
 
-EXPECTED_UPDATE_DEVICE_FACTORY_COUNT = 2
 EXPECTED_RETRY_ATTEMPTS = 3
 
 
@@ -53,8 +52,8 @@ def test_discover_adds_missing_devices(monkeypatch: pytest.MonkeyPatch) -> None:
 
         assert exporter.discovered_devices is not None
         assert set(exporter.discovered_devices.keys()) == {"10.0.0.1", "10.0.0.2"}
-        assert exporter._update_device_factories is not None
-        assert len(exporter._update_device_factories) == EXPECTED_UPDATE_DEVICE_FACTORY_COUNT
+        assert device_a.update_calls == 1
+        assert device_b.update_calls == 1
     finally:
         loop.close()
 
@@ -103,9 +102,6 @@ def test_collect_refreshes_on_scrape_when_auto_polling_disabled() -> None:
 
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
         exporter.discovered_devices = {"10.0.0.33": cast("Device", device)}
-        exporter._update_device_factories = [
-            lambda: exporter._update_device(cast("Device", device), refresh_interval=None),
-        ]
 
         metrics = list(exporter.collect())
 
@@ -126,9 +122,6 @@ def test_update_uses_retry_runner(monkeypatch: pytest.MonkeyPatch) -> None:
         options = TapoExporterOptions(devices=["10.0.0.4"])
         exporter = TapoPowerPlugPrometheusExporter(asyncio_loop=loop, options=options)
         exporter.discovered_devices = {"10.0.0.4": cast("Device", device)}
-        exporter._update_device_factories = [
-            lambda: exporter._update_device(cast("Device", device), refresh_interval=0),
-        ]
 
         called = {"count": 0}
 
@@ -136,9 +129,7 @@ def test_update_uses_retry_runner(monkeypatch: pytest.MonkeyPatch) -> None:
             factories: Iterable[Callable[[], Awaitable[object]]], **_kwargs: object
         ) -> list[object]:
             called["count"] += 1
-            for factory in factories:
-                await factory()
-            return []
+            return [await factory() for factory in factories]
 
         monkeypatch.setattr(tapo_module, "run_tasks_with_retry", fake_run_tasks_with_retry)
 

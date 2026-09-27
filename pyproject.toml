@@ -42,35 +42,8 @@ requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
-# Exclude a variety of commonly ignored directories.
-exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".git-rewrite",
-    ".hg",
-    ".ipynb_checkpoints",
-    ".ty",
-    ".nox",
-    ".pants.d",
-    ".pyenv",
-    ".pytest_cache",
-    ".pytype",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    ".vscode",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "site-packages",
-    "venv",
-]
+# Extend Ruff's standard exclusions instead of duplicating its evolving defaults.
+extend-exclude = [".ipynb_checkpoints", ".ty", ".pyenv", ".pytest_cache", ".vscode", "build", "site-packages"]
 
 # Same as Black.
 line-length = 119
@@ -109,25 +82,9 @@ quote-style = "double"
 # Like Black, indent with spaces, rather than tabs.
 indent-style = "space"
 
-# Like Black, respect magic trailing commas
-# Note: if you enable this you should ignore COM812 formatter rule.
-# skip-magic-trailing-comma = true
-
-# Like Black, automatically detect the appropriate line ending.
-# line-ending = "auto"
-
-# Enable auto-formatting of code examples in docstrings. Markdown,
-# reStructuredText code/literal blocks and doctests are all supported.
-#
-# This is currently disabled by default, but it is planned for this
-# to be opt-out in the future.
+# Format code examples in docstrings as well as source files.
 docstring-code-format = true
 
-# Set the line length limit used when formatting code snippets in
-# docstrings.
-#
-# This only has an effect when the `docstring-code-format` setting is
-# enabled.
 docstring-code-line-length = "dynamic"
 
 [tool.pytest.ini_options]

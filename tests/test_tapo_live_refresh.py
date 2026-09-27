@@ -72,9 +72,6 @@ def make_exporter(loop: asyncio.AbstractEventLoop, devices: list[FakeDevice]) ->
         ),
     )
     exporter.discovered_devices = {device.host: cast("Device", device) for device in devices}
-    exporter._update_device_factories = [
-        lambda device=device: exporter._update_device(cast("Device", device), None) for device in devices
-    ]
     return exporter
 
 
@@ -177,8 +174,9 @@ def test_cleanup_cancels_a_shared_refresh_after_scrape_timeout(
         asyncio.run_coroutine_threadsafe(exporter.cleanup(), exporter_loop).result(timeout=5)
 
 
-def test_stopping_background_updates_preserves_caller_cancellation() -> None:
-    """Cancellation during the child's finalizer must propagate to the stopping caller."""
+@pytest.mark.parametrize("historical_cancellation", [False, True])
+def test_stopping_background_updates_preserves_caller_cancellation(*, historical_cancellation: bool) -> None:
+    """New cancellation during the child's finalizer propagates even after handled requests."""
 
     async def exercise() -> None:
         exporter = make_exporter(asyncio.get_running_loop(), [])
@@ -193,15 +191,27 @@ def test_stopping_background_updates_preserves_caller_cancellation() -> None:
                 closing.set()
                 await asyncio.Event().wait()
 
+        async def stop() -> None:
+            if historical_cancellation:
+                caller = asyncio.current_task()
+                assert caller is not None
+                caller.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.sleep(0)
+            await exporter.stop_background_updates()
+
         exporter._update_task = asyncio.create_task(background())
         await asyncio.wait_for(started.wait(), timeout=5)
-        stopping = asyncio.create_task(exporter.stop_background_updates())
+        stopping = asyncio.create_task(stop())
         await asyncio.wait_for(closing.wait(), timeout=5)
         stopping.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stopping
         assert stopping.cancelled()
+        assert stopping.cancelling() == 1 + historical_cancellation
+        assert exporter._update_task is not None
         await exporter.cleanup()
+        assert exporter._cleanup_complete
 
     asyncio.run(exercise())
 
@@ -229,5 +239,42 @@ def test_cleanup_timeout_does_not_start_disconnect_after_cancellation() -> None:
         assert not exporter._cleanup_complete
         await exporter.cleanup()
         assert device.disconnect_calls == 1
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("pending", [False, True], ids=["handled", "pending"])
+def test_cleanup_distinguishes_pending_from_handled_cancellation(*, pending: bool) -> None:
+    """Handled cancellation permits cleanup; pending cancellation preserves ownership for retry."""
+
+    async def exercise() -> None:
+        caller = asyncio.current_task()
+        assert caller is not None
+        device = FakeDevice("simulated-0", "plug", make_features())
+        exporter = make_exporter(asyncio.get_running_loop(), [device])
+        await exporter.start_background_updates(interval=15)
+        await asyncio.sleep(0)
+        background = exporter._update_task
+        assert background is not None
+
+        caller.cancel()
+        if pending:
+            with pytest.raises(asyncio.CancelledError):
+                await exporter.cleanup()
+            assert exporter._update_task is background
+            assert not background.done()
+            assert background.cancelling() == 0
+            assert device.disconnect_calls == 0
+            assert not exporter._cleanup_complete
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.sleep(0)
+
+        await exporter.cleanup()
+        assert caller.cancelling() == 1
+        assert background.done()
+        assert exporter._update_task is None
+        assert device.disconnect_calls == 1
+        assert exporter._cleanup_complete
 
     asyncio.run(exercise())
