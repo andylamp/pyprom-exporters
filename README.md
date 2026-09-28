@@ -240,6 +240,11 @@ uv run --locked ruff format .
 uv run --locked prek run --all-files
 ```
 
+Use `uv version <version> --no-sync` for version bumps; it updates `pyproject.toml` and
+re-locks the project together. Commit both `pyproject.toml` and `uv.lock`. If you edit project
+metadata manually, run `uv lock` before committing. The `uv lock freshness` hook checks that
+the lockfile matches the project metadata, including its version, as CI requires.
+
 Ruff replaces Pylint and enables all stable and preview lint rules with `select = ["ALL"]`,
 `preview = true`, and NumPy-style docstrings. The only global rule exception is
 `missing-trailing-comma` (`COM812`), because Ruff's formatter owns trailing commas. Test-only exceptions
