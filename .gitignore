@@ -176,3 +176,9 @@ coverage.xml
 
 # PyPI configuration file
 .pypirc
+
+# Local investigation notes and measurements
+/scratch/
+
+# Generated benchmark reports
+/report/

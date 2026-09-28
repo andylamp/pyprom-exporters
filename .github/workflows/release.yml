@@ -6,34 +6,47 @@ on:
       - "release"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          python-version: "3.14"
       - name: Sync dependencies
-        run: uv sync --frozen --dev
-      - name: Pre-commit checks
-        run: uv run prek run --all-files
+        run: uv sync --locked --dev
+      - name: Prek checks
+        run: uv run --locked prek run --all-files
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          python-version: ${{ matrix.python-version }}
       - name: Sync dependencies
-        run: uv sync --frozen --dev
+        run: uv sync --locked --dev
       - name: Pytest
-        run: uv run pytest
+        run: uv run --locked pytest
 
   prepare-release:
     runs-on: ubuntu-latest
@@ -47,17 +60,25 @@ jobs:
       tag: ${{ steps.read-version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          python-version: "3.14"
+      - name: Reject an existing release tag before publishing
+        run: |
+          tag=$(uv run --no-project python -c 'import tomllib; print("v" + tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Release tag $tag already exists."
+            exit 1
+          fi
       - name: Read version
         id: read-version
         run: |
-          version=$(python - <<'PY'
+          version=$(uv run --no-project python - <<'PY'
           import tomllib
           from pathlib import Path
 
@@ -74,11 +95,12 @@ jobs:
       contents: write
     needs:
       - prepare-release
-      - build-artifacts
+      - sign-artifacts
+      - publish-pypi
       - publish-docker
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Create tag
@@ -108,7 +130,7 @@ jobs:
           name: signed-dist
           path: dist
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
           name: ${{ needs.prepare-release.outputs.tag }}
@@ -122,15 +144,16 @@ jobs:
     needs: prepare-release
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install Python
-        run: uv python install 3.12
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.19"
+          python-version: "3.14"
       - name: Sync dependencies
-        run: uv sync --frozen --no-dev
+        run: uv sync --locked --no-dev
       - name: Build
-        run: uv build
+        run: uv build --no-sources
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -150,7 +173,7 @@ jobs:
           name: dist
           path: dist
       - name: Sign artifacts
-        uses: sigstore/gh-action-sigstore-python@v3.3.0
+        uses: sigstore/gh-action-sigstore-python@v3.5.0
         with:
           inputs: dist/*.whl dist/*.tar.gz
       - name: Upload signed artifacts
@@ -165,7 +188,7 @@ jobs:
       id-token: write
       contents: read
     environment: release
-    needs: build-artifacts
+    needs: sign-artifacts
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
@@ -184,13 +207,13 @@ jobs:
     needs: prepare-release
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -203,5 +226,3 @@ jobs:
           tags: |
             ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}
             ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:latest
-            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}-amd64
-            ${{ vars.DOCKERHUB_USERNAME }}/pyprom-exporters:${{ needs.prepare-release.outputs.version }}-arm64

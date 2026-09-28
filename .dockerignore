@@ -1,3 +1,6 @@
+# Git metadata
+.git/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -180,3 +183,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Local investigation notes and measurements
+scratch/
+
+# Generated benchmark reports
+report/

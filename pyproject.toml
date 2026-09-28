@@ -5,75 +5,59 @@ description = "Prometheus exporters for IoT and smart-home devices, including TP
 readme = "README.md"
 authors = [{ name = "Andreas A. Grammenos", email = "ag926@cl.cam.ac.uk" }]
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
-dependencies = ["prometheus-client>=0.20.0", "omegaconf>=2.3.0", "python-kasa>=0.10.2"]
+license = "Apache-2.0"
+dependencies = ["prometheus-client>=0.26.0", "omegaconf>=2.3.1", "python-kasa>=0.10.2"]
 
 [project.optional-dependencies]
-docs = ["sphinx>=8.0.0", "myst-parser>=4.0.0", "furo>=2024.8.0"]
+docs = [
+    "sphinx>=9.0.4; python_version < '3.12'",
+    "sphinx>=9.1.0; python_version >= '3.12'",
+    "myst-parser>=5.1.0",
+    "furo>=2025.12.19",
+]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.11.11",
-    "pytest>=8.4.0",
-    "coverage>=7.0.0",
-    "genbadge[coverage]>=1.1.0",
-    "prek>=0.2.0",
-    "ty>=0.0.1a7",
-    "pylint>=3.3.3",
-    "sphinx>=8.0.0",
-    "myst-parser>=4.0.0",
-    "furo>=2024.8.0",
+    "ruff>=0.16.9",
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
+    "slipcover>=1.1.0; python_version < '3.15'",
+    "genbadge[coverage]>=1.1.3",
+    "prek>=0.5.3",
+    "ty>=0.0.84",
+    "bandit>=1.9.4",
+    "sphinx>=9.0.4; python_version < '3.12'",
+    "sphinx>=9.1.0; python_version >= '3.12'",
+    "myst-parser>=5.1.0",
+    "furo>=2025.12.19",
 ]
 
 [project.scripts]
 prom-exporter = "pyprom_exporters.prom_exporter:main"
 docs = "pyprom_exporters.docs_cli:main"
+benchmark = "pyprom_exporters.benchmarks.scalability:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.4"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
-# Exclude a variety of commonly ignored directories.
-exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".git-rewrite",
-    ".hg",
-    ".ipynb_checkpoints",
-    ".ty",
-    ".nox",
-    ".pants.d",
-    ".pyenv",
-    ".pytest_cache",
-    ".pytype",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    ".vscode",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "site-packages",
-    "venv",
-]
+# Extend Ruff's standard exclusions instead of duplicating its evolving defaults.
+extend-exclude = [".ipynb_checkpoints", ".ty", ".pyenv", ".pytest_cache", ".vscode", "build", "site-packages"]
 
 # Same as Black.
 line-length = 119
 indent-width = 4
 
-# Assume Python 3.12
-target-version = "py312"
+# Match the minimum supported Python version.
+target-version = "py311"
 
 [tool.ruff.lint]
-# Enable the isort rules.
-select = ["F", "I"]
+# Enable every stable and preview Ruff lint rule.
+select = ["ALL"]
+preview = true
+# Trailing commas are owned by the formatter; enabling both creates conflicting edits.
+ignore = ["missing-trailing-comma"]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
@@ -82,6 +66,15 @@ unfixable = []
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+# Pytest uses assertions, concrete expected values, and internal-state regression checks.
+"tests/**/*.py" = ["assert", "magic-value-comparison", "private-member-access"]
+# Sphinx loads conf.py as a standalone configuration module.
+"docs/conf.py" = ["implicit-namespace-package"]
+
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
 quote-style = "double"
@@ -89,35 +82,18 @@ quote-style = "double"
 # Like Black, indent with spaces, rather than tabs.
 indent-style = "space"
 
-# Like Black, respect magic trailing commas
-# Note: if you enable this you should ignore COM812 formatter rule.
-# skip-magic-trailing-comma = true
-
-# Like Black, automatically detect the appropriate line ending.
-# line-ending = "auto"
-
-# Enable auto-formatting of code examples in docstrings. Markdown,
-# reStructuredText code/literal blocks and doctests are all supported.
-#
-# This is currently disabled by default, but it is planned for this
-# to be opt-out in the future.
+# Format code examples in docstrings as well as source files.
 docstring-code-format = true
 
-# Set the line length limit used when formatting code snippets in
-# docstrings.
-#
-# This only has an effect when the `docstring-code-format` setting is
-# enabled.
 docstring-code-line-length = "dynamic"
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+testpaths = ["tests"]
+# Bound worker startup overhead on machines with many cores. Override with -n N or -n 0.
+addopts = ["-n", "auto", "--maxprocesses=4", "--dist=worksteal"]
 
-[tool.pylint.'MESSAGES CONTROL']
-max-line-length = 119
-# disable = """
-#     too-many-arguments,
-#     not-callable
-# """
+[tool.ty.environment]
+python-version = "3.11"
 
-[tool.ty]
+[tool.ty.src]
+include = ["src", "tests", "benchmarks", "docs/conf.py"]

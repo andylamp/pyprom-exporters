@@ -6,10 +6,10 @@ This project uses `uv` with a checked-in `uv.lock`.
 
 ```sh
 # Development environment
-uv sync --frozen
+uv sync --locked
 
 # Runtime-only environment
-uv sync --frozen --no-dev
+uv sync --locked --no-dev
 ```
 
 ## Run the Exporter
@@ -29,14 +29,43 @@ uv run prom-exporter \
   --tapo-plug-devices 10.10.2.100,10.10.2.101
 ```
 
-Optional behavior:
+Tapo uses live probing on each scrape by default:
 
-- Use background polling (default): set `exporters.tapo.prometheus_options.refresh_interval` to an
-  integer number of seconds.
-- Use scrape-triggered refresh: set `exporters.tapo.prometheus_options.refresh_interval: null`.
+```yaml
+exporters:
+  tapo:
+    prometheus_options:
+      refresh_interval: null
+```
+
+To opt into background polling, set `refresh_interval` to a positive integer number of seconds.
+Existing configuration files with an integer retain their chosen polling mode until changed to
+`null`. Live scrapes share an in-progress refresh and fall back to the previous completed snapshot
+if their wait exceeds `scrape_timeout` (default `10.0` seconds); the refresh continues in the
+background to serve later scrapes. Set Prometheus's scrape timeout above that budget to leave time
+for serialization and network transfer.
 
 At startup, the exporter logs whether automatic polling is enabled or disabled for each collector.
 
 Scrape endpoint:
 
 - `http://localhost:8090/metrics`
+
+## Development Checks
+
+The development environment includes `prek` for Git hooks, `ty` for type checking, and SlipCover
+for coverage collection. Python 3.11 through 3.14 are tested in CI.
+
+```sh
+uv run --locked prek install
+uv run --locked pytest
+uv run --locked ty check
+uv run --locked prek run --all-files
+make coverage
+```
+
+`uv run --locked pytest` and `make test` run tests in parallel with pytest-xdist, using up to four
+workers by default. Pass `-n 2` to pytest to choose a worker count, or `-n 0` for serial debugging.
+`make coverage` uses the same parallel settings under SlipCover, merges worker coverage, and
+writes `coverage.xml` and `coverage.svg`.
+SlipCover currently requires Python older than 3.15.

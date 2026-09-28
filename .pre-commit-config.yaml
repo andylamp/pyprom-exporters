@@ -1,37 +1,22 @@
+minimum_prek_version: "0.5.3"
 repos:
-  # the default pre-commit hooks, we use most of them
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: "v6.0.0"
+    rev: v6.0.0
     hooks:
-      # check if symlinks point to nothing
       - id: check-symlinks
-      # forbid files which have a UTF-8 byte-order marker
       - id: fix-byte-order-marker
-      # for filenames that would conflict in case-insensitive fs (e.g. HFS+, FAT)
       - id: check-case-conflict
-      # check all json file syntax
+      - id: check-merge-conflict
       - id: check-json
         exclude: ^\.vscode/
-      # check all yaml file syntax
       - id: check-yaml
-      # check all toml file syntax
       - id: check-toml
-      # ensure graceful EoL in each file.
       - id: end-of-file-fixer
-      # ensure no trailing whitespaces exist
       - id: trailing-whitespace
-      # fixed mixed line endings
       - id: mixed-line-ending
-      # check if the code is it valid Python
       - id: check-ast
-      # Check for debugger imports and py37+ breakpoint() calls
-      # in python source.
       - id: debug-statements
-      # this detects private keys and avoids them being committed
       - id: detect-private-key
-      # sort file contents
-      - id: file-contents-sorter
-      # check json format and make it pretty
       - id: pretty-format-json
         args: ["--autofix"]
         exclude: ^\.vscode/
@@ -40,55 +25,39 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-  - repo: https://github.com/jumanjihouse/pre-commit-hooks
-    rev: 3.0.0 # or specific git tag
-    hooks:
-      - id: fasterer
-      - id: git-check # Configure in .gitattributes
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.22.0
+    rev: v0.23.3
     hooks:
-      - id: markdownlint-cli2 # Configure in .markdownlint-cli2.jsonc
+      - id: markdownlint-cli2
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.12.0-2
+    rev: v3.14.1-1
     hooks:
       - id: shfmt
         args: ["-i", "4"]
-  # add bandit
-  - repo: https://github.com/Lucas-C/pre-commit-hooks-bandit
-    rev: "v1.0.6"
-    hooks:
-      - id: python-bandit-vulnerability-check
-        args: [--exclude ./.venv]
-  # add ruff
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.7
-    hooks:
-      # Run the linter.
-      - id: ruff-check
-        args: [--fix]
-      # Run the formatter.
-      - id: ruff-format
-  # use local repository hooks so we can discover libraries.
+  # Use the project environment so all Python tools share uv.lock and imports.
   - repo: local
     hooks:
-      # add ty (astral type checker, replaces mypy)
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check --fix
+        language: system
+        # Ruff also checks pyproject.toml; other TOML files are not Python inputs.
+        files: '(\.pyi?$|(^|/)pyproject\.toml$)'
+        types_or: [python, pyi, toml]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types_or: [python, pyi]
       - id: ty-check
         name: ty
-        entry: uv run ty check
+        entry: uv run --locked ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+      - id: bandit
+        name: bandit
+        entry: uv run --locked bandit -q -r src
         language: system
         types: [python]
         pass_filenames: false
-      - id: pylint
-        name: pylint
-        entry: env PYTHONPATH=. pylint --extension-pkg-whitelist="pydantic"
-        language: python
-        types: [python]
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Ruff version.
-    rev: v0.15.7
-    hooks:
-      # Run the linter.
-      - id: ruff-check
-      # Run the formatter.
-      - id: ruff-format

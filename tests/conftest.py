@@ -1,10 +1,12 @@
+# Copyright (c) 2026 pyprom-exporters contributors
+# SPDX-License-Identifier: Apache-2.0
 """Shared test helpers and fixtures for Tapo exporter tests."""
 
 import time
 from types import SimpleNamespace
 
 
-class FakeDevice:  # pylint: disable=too-many-instance-attributes
+class FakeDevice:
     """Fake Tapo plug device used by unit tests."""
 
     def __init__(self, host: str, alias: str, features: dict[str, SimpleNamespace]) -> None:
@@ -17,6 +19,7 @@ class FakeDevice:  # pylint: disable=too-many-instance-attributes
         self.features = features
         self._last_update_time: float | None = None
         self.update_calls = 0
+        self.disconnect_calls = 0
 
     async def update(self) -> None:
         """Record a fake update call and timestamp."""
@@ -24,12 +27,18 @@ class FakeDevice:  # pylint: disable=too-many-instance-attributes
         self._last_update_time = time.monotonic()
 
     async def disconnect(self) -> None:
-        """Stub disconnect for fake devices."""
-        return None
+        """Record a fake disconnect call."""
+        self.disconnect_calls += 1
 
 
 def make_features() -> dict[str, SimpleNamespace]:
-    """Create a default set of fake device feature values for unit tests."""
+    """Create a default set of fake device feature values for unit tests.
+
+    Returns
+    -------
+    dict[str, SimpleNamespace]
+        Independent mutable feature readings keyed by Kasa feature name.
+    """
     return {
         "current_consumption": SimpleNamespace(value=5.0),
         "voltage": SimpleNamespace(value=230.0),
