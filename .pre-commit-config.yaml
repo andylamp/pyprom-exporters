@@ -37,6 +37,12 @@ repos:
   # Use the project environment so all Python tools share uv.lock and imports.
   - repo: local
     hooks:
+      - id: uv-lock
+        name: uv lock freshness
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
       - id: ruff-check
         name: ruff check
         entry: uv run --locked ruff check --fix
