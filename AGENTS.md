@@ -26,7 +26,8 @@ uses `python-kasa` for asynchronous discovery and updates and `prometheus_client
 1. Start the asyncio loop thread and retain ownership of the exporter before initializing it.
 1. Discover devices and publish initial readings before starting the HTTP endpoint.
 1. Probe on scrape by default (`refresh_interval: null`). Overlapping live scrapes share a refresh;
-   timed-out callers read the previous snapshot while that refresh continues.
+   healthy device results publish independently and release waiting scrapes before bounded recovery work.
+   Timed-out callers read the latest available device snapshots while that refresh continues.
 1. A positive integer refresh interval enables background polling and cached scrapes.
 1. On SIGINT/SIGTERM, stop HTTP serving, cancel outstanding work, close devices and stop the loop.
 
@@ -39,6 +40,12 @@ worker pool when concurrency is bounded. Retry waits occupy worker slots. Cancel
 and joins sibling cleanup; it is never returned as an ordinary device failure.
 Configured-host discovery, updates and disconnects use the device concurrency limit. Broadcast
 discovery is delegated to python-kasa and is outside that worker bound.
+
+Each whole SDK update has a finite `update_timeout` (default 10 seconds); native Kasa retries stay
+inside that budget. Failed initialized devices and missing hosts recover in fair bounded waves
+after healthy updates. Retired sessions must close before replacement, with bounded close attempts.
+Device snapshots are immutable; update publication is O(1) per device and metric aggregation is
+lazy O(N). Operational timestamp metrics describe successful SDK updates, not physical sensor freshness.
 
 ## Configuration
 

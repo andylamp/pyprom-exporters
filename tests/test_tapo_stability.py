@@ -127,7 +127,8 @@ def test_empty_enabled_families_disables_plug_metrics() -> None:
     loop = asyncio.new_event_loop()
     try:
         exporter = make_exporter(loop, [FakeDevice("10.0.0.1", "plug", make_features())], supported_device_families={})
-        assert [metric.name for metric in exporter._build_metrics()] == ["tapo_discovered_devices"]
+        assert all(metric.name.startswith("tapo_") for metric in exporter._build_metrics())
+        assert any(metric.name == "tapo_device_update_success" for metric in exporter.collect())
     finally:
         loop.close()
 
@@ -165,7 +166,7 @@ def test_invalid_metric_labels_are_rejected(labels: list[str]) -> None:
 
 
 def test_failed_device_does_not_cancel_healthy_updates_or_emit_stale_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exhausted retries for one device cannot prevent fresh healthy samples."""
+    """One failed SDK update cannot prevent fresh healthy samples or add exporter retries."""
     monkeypatch.setattr(
         tapo_module, "run_tasks_with_retry", partial(tapo_module.run_tasks_with_retry, delay=0, jitter=0)
     )
@@ -179,8 +180,9 @@ def test_failed_device_does_not_cancel_healthy_updates_or_emit_stale_values(monk
         samples = next(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert len(samples) == 1
         assert samples[0].labels["host"] == good.host
-        assert bad.update.await_count == 3
+        assert bad.update.await_count == 1
         bad.update = AsyncMock()
+        exporter._failed_retry_hosts[bad.host] = 0
         await exporter.update_and_collect()
         samples = next(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert len(samples) == 2
@@ -200,6 +202,7 @@ def test_authentication_failures_are_not_retried_and_recover() -> None:
         assert not samples
         assert device.update.await_count == 1
         device.update = AsyncMock()
+        exporter._failed_retry_hosts[device.host] = 0
         await exporter.update_and_collect()
         samples = next(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert len(samples) == 1
@@ -335,14 +338,14 @@ def test_scrape_on_exporter_loop_and_stopped_loop_returns_cache() -> None:
         exporter = make_exporter(
             asyncio.get_running_loop(), [], prometheus_options=TapoPrometheusOptions(refresh_interval=None)
         )
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         await exporter.cleanup()
 
     asyncio.run(exercise())
     loop = asyncio.new_event_loop()
     try:
         exporter = make_exporter(loop, [], prometheus_options=TapoPrometheusOptions(refresh_interval=None))
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
     finally:
         loop.close()
 
@@ -385,7 +388,7 @@ def test_scrape_timeout_returns_cache_until_cleanup_cancels_refresh(monkeypatch:
     monkeypatch.setattr(exporter, "update_and_collect", hang)
     try:
         start = time.monotonic()
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert time.monotonic() - start < 1
         assert not cancelled.is_set()
     finally:

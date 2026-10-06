@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
+async def _checkpoint_cancellation() -> None:
+    """Deliver pending cancellation without treating handled requests as new ones."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        await asyncio.sleep(0)
+
+
 # Retry controls are forwarded without changing the public keyword-only API.
 async def _retry(  # ruff: ignore[too-many-arguments]
     make_coro: Callable[[], Awaitable[T]],
@@ -264,7 +271,7 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
 
     async def _run(factory: Callable[[], Awaitable[T]]) -> T | Exception:
         try:
-            return await _retry(
+            result = await _retry(
                 factory,
                 attempts=attempts,
                 delay=delay,
@@ -272,6 +279,9 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
                 jitter=jitter,
                 retry_exceptions=retry_exceptions,
             )
+            # A factory can request cancellation and return without yielding.
+            # Deliver it here so the handler also cancels and joins siblings.
+            await _checkpoint_cancellation()
         except asyncio.CancelledError:
             # TaskGroup treats a cancelled child as normal completion. Cancel
             # the owner so independent child cancellation also joins siblings.
@@ -283,6 +293,8 @@ async def run_tasks_with_retry(  # ruff: ignore[too-many-arguments]
             if return_exceptions:
                 return exc
             raise
+        else:
+            return result
 
     if concurrency is None:
         async with asyncio.TaskGroup() as task_group:

@@ -1351,7 +1351,7 @@ wheels = [
 
 [[package]]
 name = "pyprom-exporters"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "omegaconf" },
@@ -1389,7 +1389,7 @@ requires-dist = [
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=5.1.0" },
     { name = "omegaconf", specifier = ">=2.3.1" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
-    { name = "python-kasa", specifier = ">=0.10.2" },
+    { name = "python-kasa", specifier = ">=0.11.0.1" },
     { name = "sphinx", marker = "python_full_version >= '3.12' and extra == 'docs'", specifier = ">=9.1.0" },
     { name = "sphinx", marker = "python_full_version < '3.12' and extra == 'docs'", specifier = ">=9.0.4" },
 ]
@@ -1442,7 +1442,7 @@ wheels = [
 
 [[package]]
 name = "python-kasa"
-version = "0.10.2"
+version = "0.11.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1451,9 +1451,9 @@ dependencies = [
     { name = "mashumaro" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/44/b3c88bb2560c55e57078aed1777ead1b60981e6d852c9d8b9c7351bd5c6e/python_kasa-0.10.2.tar.gz", hash = "sha256:4a75b72dc354b43b0b038d5f8ca142049879c76415728a9f24473fb15af45562", size = 458421, upload-time = "2025-02-12T19:32:12.025Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/49/30b3526b58892f8407f164aa9b891db3ab6dbebd86f151124e557a7279f6/python_kasa-0.11.0.1.tar.gz", hash = "sha256:378e6bb923690cda5cf1e9d33d4d4094c21a6e337614fd29a0f2d4af40da23e4", size = 526277, upload-time = "2026-10-04T18:41:39.431Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/94/69edbee0052d2eb2d68dbb80bc1f344085023e23b6889e95a4401da7ad55/python_kasa-0.10.2-py3-none-any.whl", hash = "sha256:b57af2ce84b8da7c1d5f296e4a18be4246b500b5633acd5a85200612f81a38ea", size = 261905, upload-time = "2025-02-12T19:32:09.744Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/f1/0d1b2b6617263ba925675b604454fc0686898ac856487827067a1331aa8d/python_kasa-0.11.0.1-py3-none-any.whl", hash = "sha256:58e0ad5c5b71e60c2b58f3a5a17bd9b9427b8947ec72aecb96edaaa6a78d84ad", size = 276609, upload-time = "2026-10-04T18:41:38.098Z" },
 ]
 
 [[package]]

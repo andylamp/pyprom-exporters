@@ -93,12 +93,12 @@ def test_scrape_deadlines_preserve_progress_for_the_entire_fleet(
     monkeypatch.setattr(first, "update", slow_update)
     exporter = make_exporter(exporter_loop, devices)
     try:
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert started.wait(5)
         pending = exporter._refresh_future
         assert pending is not None
         assert not pending.done()
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         assert exporter._refresh_future is pending
         assert first.update_calls == 1
 
@@ -130,7 +130,7 @@ def test_overlapping_scrapes_share_refresh_after_all_waiters_time_out(
 
     def scrape() -> int:
         barrier.wait(timeout=5)
-        return len(list(exporter.collect()))
+        return sum(len(metric.samples) for metric in exporter.collect() if metric.name == "current_consumption")
 
     try:
         with ThreadPoolExecutor(max_workers=callers) as pool:
@@ -164,7 +164,7 @@ def test_cleanup_cancels_a_shared_refresh_after_scrape_timeout(
     monkeypatch.setattr(device, "update", slow_update)
     exporter = make_exporter(exporter_loop, [device])
     try:
-        assert not list(exporter.collect())
+        assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
         asyncio.run_coroutine_threadsafe(exporter.cleanup(), exporter_loop).result(timeout=5)
         assert cancelled.is_set()
         assert device.disconnect_calls == 1
