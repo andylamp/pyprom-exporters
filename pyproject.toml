@@ -1,12 +1,16 @@
 [project]
 name = "pyprom-exporters"
-version = "0.2.0"
+version = "0.3.0"
 description = "Prometheus exporters for IoT and smart-home devices, including TP-Link Tapo plugs."
 readme = "README.md"
 authors = [{ name = "Andreas A. Grammenos", email = "ag926@cl.cam.ac.uk" }]
 requires-python = ">=3.11"
 license = "Apache-2.0"
-dependencies = ["prometheus-client>=0.26.0", "omegaconf>=2.3.1", "python-kasa>=0.10.2"]
+dependencies = [
+    "prometheus-client>=0.26.0",
+    "omegaconf>=2.3.1",
+    "python-kasa>=0.11.0.1",
+]
 
 [project.optional-dependencies]
 docs = [

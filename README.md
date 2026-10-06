@@ -13,7 +13,7 @@ The current concrete exporter targets TP-Link Tapo smart plugs via `python-kasa`
 ## What It Does
 
 - Discovers Tapo devices on your LAN (UDP broadcast) and/or monitors an explicit list of device IPs.
-- Updates device state on a background asyncio loop (or on scrape), with retries and backoff.
+- Updates device state with bounded asynchronous workers, isolating failed devices.
 - Exposes metrics via a Prometheus HTTP endpoint.
 
 ## How It Works
@@ -107,9 +107,10 @@ Important fields:
 - `log_level`: root logging level for the process.
 - `prometheus_port`: exporter listen port.
 - `exporters.tapo.devices`: list of device IPs to monitor (used in addition to discovery).
+- `exporters.tapo.update_timeout`: whole-device SDK update deadline in seconds (`10.0` by default).
 - `exporters.tapo.prometheus_options.refresh_interval`: `null` by default, which probes devices
   during each scrape. A positive integer enables background polling with that interval in seconds;
-  scrapes then read the latest completed snapshot.
+  scrapes then read the latest available device snapshots.
 - `exporters.tapo.discovery_options.*`: discovery parameters passed to `python-kasa`.
 - `exporters.tapo.discovery_options.tapo_username_env_key` / `tapo_password_env_key`: env var names
   used to populate `python-kasa` `Credentials` by default.
@@ -145,9 +146,10 @@ exporters:
 ```
 
 Existing configurations with an integer `refresh_interval` keep background polling; change it to
-`null` to enable live probing. Overlapping live scrapes share one device refresh. Each scrape waits
-up to `scrape_timeout` seconds (default `10.0`); on timeout it returns the last completed snapshot
-while the shared refresh continues. Initial discovery also publishes a snapshot.
+`null` to enable live probing. Overlapping live scrapes share one refresh. Healthy devices publish
+their readings independently and release waiting scrapes before slower recovery work finishes.
+Each scrape waits up to `scrape_timeout` seconds (default `10.0`); on timeout it returns the latest
+available readings, including healthy progress from the ongoing pass. Initial discovery also publishes readings.
 See [collection and failure recovery](docs/configuration.md#bounded-collection-and-failure-recovery)
 for timeout tuning and the synchronous collector interface.
 
@@ -167,7 +169,23 @@ The Tapo plug exporter currently emits:
 - `current_month_consumption{host,alias}`: watt-hours (gauge).
 - `current_rssi{host,alias}`: RSSI value reported by the device (gauge).
 
-Only devices that report the `current_consumption` feature are exported.
+Power and energy measurements require the `current_consumption` feature. Operational metrics remain
+available independently of the configured measurement families:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `tapo_device_update_success{host,alias}` | Gauge | Latest SDK update outcome; zero also means no successful update yet |
+| `tapo_device_last_success_timestamp_seconds{host,alias}` | Gauge | Unix time of the last successful SDK update; zero before the first success |
+| `tapo_device_update_duration_seconds{host,alias}` | Gauge | Latest SDK attempt duration, excluding queue and discovery time |
+| `tapo_device_update_failures_total{host,alias}` | Counter | Failed SDK updates, including timeouts |
+| `tapo_device_update_timeouts_total{host,alias}` | Counter | Timed-out SDK updates |
+| `tapo_refresh_duration_seconds` | Gauge | Duration of the most recent completed refresh pass |
+| `tapo_refresh_in_progress` | Gauge | One while a refresh pass is running |
+| `tapo_scrape_refresh_timeouts_total` | Counter | HTTP callers whose wait for fresh readings expired |
+
+These metrics are available from version 0.3.0. A successful SDK update does not prove the age of a
+physical sensor sample. See [failure recovery and diagnostics](docs/configuration.md#bounded-collection-and-failure-recovery)
+for deadlines, retry scheduling and unknown-device semantics.
 
 ## Prometheus Scrape Config
 

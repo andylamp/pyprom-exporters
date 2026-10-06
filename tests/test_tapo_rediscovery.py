@@ -61,7 +61,7 @@ def test_failed_rediscovery_retires_metrics_and_cannot_reopen_old_devices(
             with pytest.raises(failure):
                 await exporter.discover()
             assert exporter.discovered_devices == {}
-            assert not list(exporter.collect())
+            assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
             await exporter.update_and_collect()
             assert retired.update_calls == 1
         finally:
@@ -88,7 +88,7 @@ def test_configured_inventory_can_recover_after_broadcast_rediscovery_fails(monk
             await exporter.discover()
             with pytest.raises(OSError, match="broadcast failure"):
                 await exporter.discover()
-            assert not list(exporter.collect())
+            assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
             await exporter.update_and_collect()
             assert exporter.discovered_devices == {replacement.host: replacement}
             assert retired.update_calls == 1
@@ -127,7 +127,7 @@ def test_cancelling_rediscovery_during_disconnect_preserves_cleanup_handles(monk
             with pytest.raises(asyncio.CancelledError):
                 await rediscovery
             assert exporter.discovered_devices == {device.host: device}
-            assert not list(exporter.collect())
+            assert not any(metric.samples for metric in exporter.collect() if metric.name == "current_consumption")
             release.set()
         finally:
             release.set()

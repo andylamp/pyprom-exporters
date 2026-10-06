@@ -12,15 +12,16 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from itertools import chain, islice
+from time import time as epoch_time
 from typing import TYPE_CHECKING
 
 from kasa import Credentials, Device
 from kasa.discover import DeviceDict, Discover, OnDiscoveredCallable, OnDiscoveredRawCallable, OnUnsupportedCallable
-from kasa.exceptions import SMART_AUTHENTICATION_ERRORS, AuthenticationError, DeviceError
-from prometheus_client.metrics_core import GaugeMetricFamily, Metric
+from kasa.exceptions import TimeoutError as KasaTimeoutError
+from prometheus_client.metrics_core import CounterMetricFamily, GaugeMetricFamily, Metric
 
 from . import run_tasks_with_retry
 from .base import BasePrometheusCollector, BasePrometheusOptions
@@ -35,6 +36,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_REFRESH_INTERVAL: int | None = None
 REDISCOVERY_INTERVAL: float = 30.0
 MAC_HEX_LENGTH = 12
+DISCONNECT_TIMEOUT = 1.0
+DEVICE_HEALTH_METRICS = {
+    "update_success": "Whether the latest device update succeeded",
+    "last_success_timestamp_seconds": "Unix timestamp of the last successful SDK update, not sensor sample time",
+    "update_duration_seconds": "Duration of the latest SDK update including native retries",
+    "update_failures_total": "Failed SDK updates",
+    "update_timeouts_total": "SDK updates that timed out",
+}
+EXPORTER_HEALTH_METRICS = {
+    "tapo_refresh_duration_seconds": "Duration of the latest device refresh pass including recovery",
+    "tapo_refresh_in_progress": "Whether a device refresh pass is running",
+    "tapo_scrape_refresh_timeouts_total": "Scrape callers whose refresh wait timed out",
+}
+OPERATIONAL_METRIC_NAMES = {
+    "tapo_discovered_devices",
+    *(f"tapo_device_{name}" for name in DEVICE_HEALTH_METRICS),
+    *EXPORTER_HEALTH_METRICS,
+}
+OPERATIONAL_METRIC_NAMES.update(
+    name.removesuffix("_total") + suffix
+    for name in tuple(OPERATIONAL_METRIC_NAMES)
+    if name.endswith("_total")
+    for suffix in ("", "_created")
+)
 
 
 @dataclass
@@ -297,6 +322,8 @@ class TapoExporterOptions:
     """Device families to collect metrics from, keyed by family."""
     max_concurrent_devices: int = 10
     """Maximum simultaneous device discovery, update, or disconnect operations."""
+    update_timeout: float = 10.0
+    """Deadline for one complete SDK update, including its native retries, in seconds."""
     per_device_family_metrics: TapoDeviceFamilyMetrics | None = None
     """Metrics to be collected per device family."""
 
@@ -306,7 +333,7 @@ class TapoExporterOptions:
         Raises
         ------
         ValueError
-            If the device concurrency limit is not a positive integer.
+            If the device concurrency limit or whole-update deadline is invalid.
 
         """
         if (
@@ -315,6 +342,14 @@ class TapoExporterOptions:
             or self.max_concurrent_devices < 1
         ):
             message = "max_concurrent_devices must be a positive integer"
+            raise ValueError(message)
+        if (
+            isinstance(self.update_timeout, bool)
+            or not isinstance(self.update_timeout, (int, float))
+            or not math.isfinite(self.update_timeout)
+            or self.update_timeout <= 0
+        ):
+            message = "update_timeout must be finite and positive"
             raise ValueError(message)
         if self.discovery_options is None:
             self.discovery_options = TapoDiscoveryOptions()
@@ -355,7 +390,7 @@ class TapoExporterOptions:
         """
         if self.per_device_family_metrics is None:
             return
-        names = {"tapo_discovered_devices"}
+        names = set(OPERATIONAL_METRIC_NAMES)
         allowed_labels = {"host", "alias", "model", "device_type", "firmware_version", "hardware_version"}
         for metric in self.per_device_family_metrics.plug.values():
             # Apply the client's naming rules before discovery starts any device I/O.
@@ -403,6 +438,21 @@ class TapoPlugDeviceDump:
     """The current RSSI (Received Signal Strength Indicator) of the Tapo device, if available."""
 
 
+@dataclass(frozen=True)
+class TapoDeviceSnapshot:
+    """An immutable reading and operational state safe to hand to scrape threads."""
+
+    host: str
+    alias: str = "unknown"
+    identity: str | None = None
+    dump: TapoPlugDeviceDump | None = None
+    update_success: bool = False
+    last_success_timestamp_seconds: float = 0.0
+    update_duration_seconds: float = 0.0
+    update_failures_total: int = 0
+    update_timeouts_total: int = 0
+
+
 @dataclass
 class TapoDeviceUpdateResult:
     """Result of attempting to update a device."""
@@ -427,10 +477,13 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         self._asyncio_loop = asyncio_loop
         self.callbacks = callbacks or TapoCallbacks()
         self._failed_devices: set[str] = set()
+        self._failed_retry_hosts: dict[str, float] = {}
         self._last_successful_updates: dict[str, float] = {}
         self._pending_hosts: dict[str, float] = {}
+        self._discovery_hosts: dict[str, str] = {}
         # Retired sessions remain owned until closing them actually succeeds.
         self._pending_disconnects: dict[int, Device] = {}
+        self._retired_devices: dict[str, Device] = {}
         self._metrics_lock = threading.Lock()
         self._scrape_refresh_lock = threading.Lock()
         self._refresh_future: Future[None] | None = None
@@ -438,6 +491,14 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         self._cleanup_lock = asyncio.Lock()
         self._cleanup_complete = False
         self._latest_metrics: list[Metric] = []
+        self._device_snapshots: dict[str, TapoDeviceSnapshot] = {}
+        self._health_hosts: dict[str, str] = {}
+        self._metrics_dirty = True
+        self._inventory_count = 0
+        self._refresh_in_progress = False
+        self._refresh_duration = 0.0
+        self._scrape_timeouts = 0
+        self._refresh_ready = threading.Event()
         self._update_task: asyncio.Task[None] | None = None
         self._closed = False
 
@@ -469,10 +530,18 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             # Retired inventory must not remain visible if rediscovery fails or is cancelled.
             with self._metrics_lock:
                 self._latest_metrics = []
+                self._device_snapshots = {
+                    host: replace(snapshot, dump=None, update_success=False)
+                    for host, snapshot in self._device_snapshots.items()
+                }
+                self._inventory_count = 0
+                self._metrics_dirty = True
             await self._disconnect_devices()
             self.discovered_devices = {}
+            self._discovery_hosts.clear()
             self._last_successful_updates.clear()
             self._failed_devices.clear()
+            self._failed_retry_hosts.clear()
             self._pending_hosts = dict.fromkeys(sorted(set(self.options.devices)), 0.0)
             options = self.options.discovery_options
             if options is None:
@@ -491,11 +560,15 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                     port=options.port,
                     timeout=options.timeout,
                 )
+                self._discovery_hosts = {device.host: device.host for device in self.discovered_devices.values()}
 
             self._pending_hosts = dict.fromkeys(
                 sorted(set(self.options.devices) - self.discovered_devices.keys()), 0.0
             )
+            for host in self._pending_hosts:
+                self._seed_missing_host(host)
             await self._discover_configured_devices(full_scan=True)
+            self._prune_diagnostic_history()
             logger.info("Discovered %s Tapo devices.", len(self.discovered_devices))
             if options.with_update:
                 await self._update_devices()
@@ -527,15 +600,17 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
 
         async def discover_host(host: str) -> None:
             try:
-                device = await Discover.discover_single(
-                    host=host,
-                    credentials=options.credentials,
-                    discovery_timeout=options.discovery_timeout,
-                    port=options.port,
-                    timeout=options.timeout,
-                    on_discovered_raw=self.callbacks.on_discovered_raw,
-                    on_unsupported=self.callbacks.on_unsupported,
-                )
+                await self._close_retired_device(host)
+                async with asyncio.timeout(float(options.discovery_timeout)):
+                    device = await Discover.discover_single(
+                        host=host,
+                        credentials=options.credentials,
+                        discovery_timeout=options.discovery_timeout,
+                        port=options.port,
+                        timeout=options.timeout,
+                        on_discovered_raw=self.callbacks.on_discovered_raw,
+                        on_unsupported=self.callbacks.on_unsupported,
+                    )
                 if device is not None:
                     await self._retain_discovered_device(host, device, devices, identities)
             except Exception as exc:  # ruff: ignore[blind-except]
@@ -604,39 +679,82 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         self._pending_hosts.pop(host, None)
         if existing is None:
             devices[device.host] = device
+            self._discovery_hosts[device.host] = host
+            self._retain_health_target(host, device)
             if identity is not None:
                 identities[identity] = device
-        elif existing is not device and id(device) not in self._pending_disconnects:
-            self._pending_disconnects[id(device)] = device
-            await device.disconnect()
-            self._pending_disconnects.pop(id(device))
+        else:
+            # Keep configured names usable for recovery even when discovery returned an IP.
+            self._discovery_hosts[existing.host] = host
+            self._retain_health_target(host, existing)
+            if existing is not device and id(device) not in self._pending_disconnects:
+                self._pending_disconnects[id(device)] = device
+                await self._disconnect_device(device)
+                self._pending_disconnects.pop(id(device))
 
     async def _update_devices(self) -> None:
-        """Refresh devices while allowing healthy devices to survive peer failures."""
+        """Publish independent device results before attempting slower recovery work."""
         if self._closed or self.discovered_devices is None:
             return
-        if time.monotonic() >= next(iter(self._pending_hosts.values()), math.inf):
-            await self._discover_configured_devices()
-        # Derive work and result matching from one inventory snapshot. Retaining
-        # factories separately could reopen orphaned sessions after failed rediscovery.
-        devices = list(self.discovered_devices.values())
+        started = time.monotonic()
+        with self._metrics_lock:
+            self._refresh_in_progress = True
+            self._inventory_count = len(self.discovered_devices)
+            self._metrics_dirty = True
+        try:
+            devices = list(self.discovered_devices.values())
+            known_ids = {id(device) for device in devices}
+            for device in devices:
+                self._seed_device_snapshot(device)
+            healthy = [device for device in devices if device.host not in self._failed_devices]
+            failed = [device for device in devices if device.host in self._failed_devices]
+            await self._update_batch(healthy)
+            if healthy:
+                # Scrapes may use fresh healthy readings while failed peers recover.
+                self._refresh_ready.set()
+            await self._retry_failed_devices(failed)
+            if time.monotonic() >= next(iter(self._pending_hosts.values()), math.inf):
+                await self._discover_configured_devices()
+                await self._update_batch(
+                    [device for device in self.discovered_devices.values() if id(device) not in known_ids]
+                )
+        finally:
+            with self._metrics_lock:
+                self._refresh_in_progress = False
+                self._refresh_duration = time.monotonic() - started
+                self._inventory_count = len(self.discovered_devices or {})
+                self._metrics_dirty = True
+            self._refresh_ready.set()
+
+    async def _retry_failed_devices(self, devices: list[Device]) -> None:
+        """Retry one fair wave of failed sessions without delaying later healthy passes."""
+        by_host = {device.host: device for device in devices}
+        for host in by_host:
+            self._failed_retry_hosts.setdefault(host, 0.0)
+        now = time.monotonic()
+        eligible = list(
+            islice(
+                (
+                    by_host[host]
+                    for host, ready_at in self._failed_retry_hosts.items()
+                    if host in by_host and ready_at <= now
+                ),
+                self.options.max_concurrent_devices,
+            )
+        )
+        await self._update_batch(eligible)
+
+    async def _update_batch(self, devices: list[Device]) -> None:
+        """Run one bounded attempt per device; Kasa owns retries inside that attempt."""
+        if not devices:
+            return
         refresh_interval = self._get_refresh_interval()
-        results = await run_tasks_with_retry(
+        await run_tasks_with_retry(
             (lambda device=device: self._update_device(device, refresh_interval) for device in devices),
             concurrency=self.options.max_concurrent_devices,
+            attempts=1,
             return_exceptions=True,
         )
-        for device, result in zip(devices, results, strict=True):
-            if isinstance(result, Exception):
-                self._failed_devices.add(device.host)
-                logger.warning("Update failed for device %s: %s", device.host, result)
-                continue
-            if result.host is None or result.auth_failed is None:
-                continue
-            if result.auth_failed:
-                self._failed_devices.add(result.host)
-            else:
-                self._failed_devices.discard(result.host)
 
     async def update(self) -> None:
         """Update devices without overlapping other I/O on their sessions."""
@@ -644,16 +762,13 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             await self._update_devices()
 
     async def update_and_collect(self) -> None:
-        """Publish a complete snapshot after the update pass finishes."""
+        """Complete a refresh pass, publishing each device independently as it finishes."""
         async with self._device_lock:
             if self._closed:
                 return
             await self._update_devices()
-            if self._closed:
-                return
-            metrics = self._build_metrics()
-            with self._metrics_lock:
-                self._latest_metrics = metrics
+            if not self._closed:
+                self._build_metrics()
 
     async def _background_update_loop(self, interval: float) -> None:
         """Refresh at a fixed delay after each completed update pass."""
@@ -711,18 +826,12 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         self._update_task = None
 
     async def _update_device(self, device: Device, refresh_interval: int | None) -> TapoDeviceUpdateResult:
-        """Update one device and record timestamps independently of kasa internals.
+        """Bound the entire SDK update and publish its reading or failure independently.
 
         Returns
         -------
         TapoDeviceUpdateResult
-            The device host and authentication status, if an update was due.
-
-        Raises
-        ------
-        DeviceError
-            If the device reports an error unrelated to authentication.
-
+            Whether the attempted update succeeded, or an empty status when no update was due.
         """
         last_update = self._last_successful_updates.get(device.host)
         if (
@@ -731,18 +840,61 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             and time.monotonic() - last_update < refresh_interval
         ):
             return TapoDeviceUpdateResult(host=device.host)
+        uninitialized = last_update is None
+        started = time.monotonic()
         try:
-            await device.update()
-        except AuthenticationError:
-            logger.exception("Authentication failed for device %s", device.host)
+            uninitialized = uninitialized and not device.features
+            async with asyncio.timeout(self.options.update_timeout):
+                await device.update()
+        except Exception as exc:  # ruff: ignore[blind-except]
+            timed_out = isinstance(exc, (TimeoutError, KasaTimeoutError))
+            self._failed_devices.add(device.host)
+            self._failed_retry_hosts.pop(device.host, None)
+            self._failed_retry_hosts[device.host] = time.monotonic() + REDISCOVERY_INTERVAL
+            self._record_device_snapshot(device, started, success=False, timed_out=timed_out)
+            error_message = str(exc) or type(exc).__name__
+            logger.warning("Update failed for device %s: %s", device.host, error_message)
+            if uninitialized or timed_out:
+                await self._retire_device(device)
             return TapoDeviceUpdateResult(host=device.host, auth_failed=True)
-        except DeviceError as exc:
-            if exc.error_code in SMART_AUTHENTICATION_ERRORS:
-                logger.exception("Authentication failed for device %s", device.host)
-                return TapoDeviceUpdateResult(host=device.host, auth_failed=True)
-            raise
         self._last_successful_updates[device.host] = time.monotonic()
+        self._failed_devices.discard(device.host)
+        self._failed_retry_hosts.pop(device.host, None)
+        self._record_device_snapshot(device, started, success=True)
         return TapoDeviceUpdateResult(host=device.host, auth_failed=False)
+
+    async def _retire_device(self, device: Device) -> None:
+        """Recover failed initialization or interrupted updates through a fresh session."""
+        host = self._discovery_hosts.pop(device.host, device.host)
+        self._pending_disconnects[id(device)] = device
+        self._retired_devices[host] = device
+        if self.discovered_devices is not None:
+            self.discovered_devices.pop(device.host, None)
+        self._last_successful_updates.pop(device.host, None)
+        self._failed_devices.discard(device.host)
+        self._failed_retry_hosts.pop(device.host, None)
+        self._pending_hosts.pop(host, None)
+        self._pending_hosts[host] = time.monotonic() + REDISCOVERY_INTERVAL
+        with self._metrics_lock:
+            self._inventory_count = len(self.discovered_devices or {})
+            self._metrics_dirty = True
+        try:
+            await self._close_retired_device(host)
+        except Exception as exc:  # ruff: ignore[blind-except]
+            error_message = str(exc) or type(exc).__name__
+            logger.warning("Disconnect failed for retired device %s: %s", device.host, error_message)
+
+    async def _disconnect_device(self, device: Device) -> None:
+        """Bound session closure while allowing cancellation to preserve ownership."""
+        async with asyncio.timeout(min(self.options.update_timeout, DISCONNECT_TIMEOUT)):
+            await device.disconnect()
+
+    async def _close_retired_device(self, host: str) -> None:
+        """Close a retired session before allocating another for the same discovery target."""
+        if (device := self._retired_devices.get(host)) is not None:
+            await self._disconnect_device(device)
+            self._pending_disconnects.pop(id(device), None)
+            self._retired_devices.pop(host, None)
 
     @staticmethod
     def collect_from_plug_device(
@@ -814,7 +966,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             for device in chain((self.discovered_devices or {}).values(), self._pending_disconnects.values())
         }
         results = await run_tasks_with_retry(
-            (device.disconnect for device in devices.values()),
+            (lambda device=device: self._disconnect_device(device) for device in devices.values()),
             concurrency=self.options.max_concurrent_devices,
             return_exceptions=True,
         )
@@ -824,6 +976,9 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 logger.warning("Disconnect failed for device %s: %s", device.host, result)
             else:
                 self._pending_disconnects.pop(id(device), None)
+        self._retired_devices = {
+            host: device for host, device in self._retired_devices.items() if id(device) in self._pending_disconnects
+        }
 
     async def disconnect(self) -> None:
         """Disconnect all devices after any in-flight update has finished."""
@@ -836,6 +991,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             if self._cleanup_complete:
                 return
             self._closed = True
+            self._refresh_ready.set()
             try:
                 await self.stop_background_updates()
                 with self._scrape_refresh_lock:
@@ -848,10 +1004,15 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                 # but never serve stale metrics once shutdown has started.
                 with self._metrics_lock:
                     self._latest_metrics = []
+                    self._device_snapshots.clear()
+                    self._health_hosts.clear()
+                    self._metrics_dirty = False
             self.discovered_devices = {}
             self._last_successful_updates.clear()
             self._failed_devices.clear()
+            self._failed_retry_hosts.clear()
             self._pending_hosts.clear()
+            self._discovery_hosts.clear()
             self._cleanup_complete = not self._pending_disconnects
 
     def _metric_definitions(self) -> dict[TapoPerPlugMetricType, TapoPlugGaugeMetric]:
@@ -867,66 +1028,241 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
         configured = self.options.per_device_family_metrics
         return configured.plug if configured and families.get(TapoDeviceFamily.PLUG, False) else {}
 
+    @staticmethod
+    def _device_alias(device: Device) -> str:
+        """Read a usable alias even when device initialization is incomplete.
+
+        Returns
+        -------
+        str
+            The device alias, or the stable unknown placeholder.
+        """
+        try:
+            return str(device.alias or "unknown")
+        except Exception:  # ruff: ignore[blind-except]
+            return "unknown"
+
+    def _read_device_dump(self, device: Device) -> TapoPlugDeviceDump | None:
+        """Extract measurements without keeping SDK objects in the scrape cache.
+
+        Returns
+        -------
+        TapoPlugDeviceDump | None
+            Supported available readings, or None when extraction is unavailable.
+        """
+        try:
+            if self._get_device_family(device) != TapoDeviceFamily.PLUG or not self._metric_definitions():
+                return None
+            options = self.options.discovery_options
+            return self.collect_from_plug_device(
+                device, options.current_consumption_key if options else "current_consumption"
+            )
+        except Exception:
+            logger.exception("Could not collect metrics for device %s", device.host)
+            return None
+
+    def _seed_missing_host(self, host: str) -> None:
+        with self._metrics_lock:
+            key = self._health_hosts.setdefault(host, host)
+            self._device_snapshots.setdefault(key, TapoDeviceSnapshot(host=key))
+            self._metrics_dirty = True
+
+    def _prune_diagnostic_history(self) -> None:
+        """Discard targets removed by an explicit full inventory replacement."""
+        targets = {
+            *self.options.devices,
+            *self._discovery_hosts.values(),
+            *self._pending_hosts,
+            *self._retired_devices,
+        }
+        with self._metrics_lock:
+            self._health_hosts = {target: host for target, host in self._health_hosts.items() if target in targets}
+            retained_hosts = {
+                *(device.host for device in (self.discovered_devices or {}).values()),
+                *(self._health_hosts.get(target, target) for target in self._pending_hosts),
+                *(device.host for device in self._retired_devices.values()),
+            }
+            self._device_snapshots = {
+                host: snapshot for host, snapshot in self._device_snapshots.items() if host in retained_hosts
+            }
+            self._metrics_dirty = True
+
+    def _retain_health_target(self, target: str, device: Device) -> None:
+        """Move shared diagnostic history when discovery resolves an alias to a new address."""
+        alias = self._device_alias(device)
+        identity = self._device_identity(device)
+        with self._metrics_lock:
+            previous_host = self._health_hosts.get(target, target)
+            previous = self._device_snapshots.get(previous_host)
+            current = self._device_snapshots.get(device.host)
+            same_device = (
+                previous is not None
+                and (previous.identity is None or identity is None or previous.identity == identity)
+                and (
+                    previous_host == device.host
+                    or previous_host not in (self.discovered_devices or {})
+                    or (identity is not None and previous.identity == identity)
+                )
+            )
+            if same_device and previous is not None:
+                if previous_host != device.host:
+                    self._device_snapshots.pop(previous_host, None)
+                    if previous.last_success_timestamp_seconds or previous.update_failures_total:
+                        self._move_health_aliases(previous_host, device.host)
+                if current is None or (
+                    previous.update_failures_total > current.update_failures_total
+                    or previous.last_success_timestamp_seconds > current.last_success_timestamp_seconds
+                ):
+                    current = replace(
+                        previous,
+                        host=device.host,
+                        alias=alias,
+                        identity=identity,
+                        dump=None,
+                        update_failures_total=max(
+                            previous.update_failures_total, current.update_failures_total if current else 0
+                        ),
+                        update_timeouts_total=max(
+                            previous.update_timeouts_total, current.update_timeouts_total if current else 0
+                        ),
+                    )
+            if current is None or (current.identity and identity and current.identity != identity):
+                current = TapoDeviceSnapshot(host=device.host, alias=alias, identity=identity)
+            self._health_hosts[target] = device.host
+            self._device_snapshots[device.host] = current
+            self._inventory_count = len(self.discovered_devices or {})
+            self._metrics_dirty = True
+
+    def _move_health_aliases(self, previous_host: str, host: str) -> None:
+        """Keep existing aliases attached to their shared diagnostic history."""
+        for target, recorded_host in self._health_hosts.items():
+            if recorded_host == previous_host:
+                self._health_hosts[target] = host
+
+    def _seed_device_snapshot(self, device: Device, *, read_measurements: bool = False) -> None:
+        previous = self._device_snapshots.get(device.host)
+        if previous is not None and (
+            not read_measurements
+            or previous.dump is not None
+            or previous.last_success_timestamp_seconds
+            or previous.update_failures_total
+        ):
+            return
+        snapshot = replace(
+            previous or TapoDeviceSnapshot(host=device.host),
+            alias=self._device_alias(device),
+            identity=self._device_identity(device),
+            dump=self._read_device_dump(device) if read_measurements else None,
+        )
+        with self._metrics_lock:
+            self._device_snapshots[device.host] = snapshot
+            self._metrics_dirty = True
+
+    def _record_device_snapshot(
+        self, device: Device, started: float, *, success: bool, timed_out: bool = False
+    ) -> None:
+        dump = self._read_device_dump(device) if success else None
+        alias = self._device_alias(device)
+        identity = self._device_identity(device)
+        finished = time.monotonic()
+        with self._metrics_lock:
+            if self._closed:
+                return
+            previous = self._device_snapshots.get(device.host, TapoDeviceSnapshot(host=device.host))
+            self._device_snapshots[device.host] = replace(
+                previous,
+                alias=alias if alias != "unknown" else previous.alias,
+                identity=identity or previous.identity,
+                dump=dump,
+                update_success=success,
+                last_success_timestamp_seconds=epoch_time() if success else previous.last_success_timestamp_seconds,
+                update_duration_seconds=finished - started,
+                update_failures_total=previous.update_failures_total + (not success),
+                update_timeouts_total=previous.update_timeouts_total + timed_out,
+            )
+            self._metrics_dirty = True
+
+    @staticmethod
+    def _operational_families() -> dict[str, GaugeMetricFamily | CounterMetricFamily]:
+        """Describe operational metric families without any device or network access.
+
+        Returns
+        -------
+        dict[str, GaugeMetricFamily | CounterMetricFamily]
+            Fixed operational families keyed by their exported names.
+        """
+        families: dict[str, GaugeMetricFamily | CounterMetricFamily] = {}
+        for field_name, description in DEVICE_HEALTH_METRICS.items():
+            name = f"tapo_device_{field_name}"
+            family_type = CounterMetricFamily if name.endswith("_total") else GaugeMetricFamily
+            families[name] = family_type(name, description, labels=["host", "alias"])
+        for name, description in EXPORTER_HEALTH_METRICS.items():
+            family_type = CounterMetricFamily if name.endswith("_total") else GaugeMetricFamily
+            families[name] = family_type(name, description)
+        return families
+
     def describe(self) -> Iterable[Metric]:
-        """Describe families without refreshing devices during registry registration.
+        """Describe configured measurement and fixed operational families without I/O.
 
         Yields
         ------
         Metric
-            An empty family describing each configured metric and the device count.
-
+            An empty metric family for registry registration.
         """
         yield GaugeMetricFamily("tapo_discovered_devices", "Number of discovered Tapo devices")
         for metric in self._metric_definitions().values():
             yield metric.get_metric()
+        yield from self._operational_families().values()
 
-    def _add_device_metrics(
-        self,
-        device: Device,
-        definitions: dict[TapoPerPlugMetricType, TapoPlugGaugeMetric],
-        families: dict[TapoPerPlugMetricType, GaugeMetricFamily],
-        consumption_key: str,
-    ) -> None:
-        """Append available readings from one supported device to shared families."""
-        if self._get_device_family(device) != TapoDeviceFamily.PLUG or not definitions:
-            return
-        dump = self.collect_from_plug_device(device, consumption_key)
-        if dump is None:
-            return
-        for metric_type, metric in definitions.items():
-            value = getattr(dump, str(metric_type), None)
-            if value is not None:
-                labels = [str(getattr(dump, label) or "unknown") for label in metric.labels]
-                families[metric_type].add_metric(labels, value)
-
-    def _build_metrics(self) -> list[Metric]:
-        """Build one family per metric and omit unavailable or stale samples.
+    def _render_metrics(self) -> list[Metric]:
+        """Aggregate immutable device snapshots while the metric cache lock is held.
 
         Returns
         -------
         list[Metric]
-            Metric families containing samples only from healthy supported devices.
-
+            Measurement and operational families for the latest independent device results.
         """
-        devices = self.discovered_devices or {}
         definitions = self._metric_definitions()
         families = {metric_type: metric.get_metric() for metric_type, metric in definitions.items()}
-        consumption_key = (
-            self.options.discovery_options.current_consumption_key
-            if self.options.discovery_options
-            else "current_consumption"
-        )
-        for device in devices.values():
-            if device.host in self._failed_devices:
-                continue
-            try:
-                self._add_device_metrics(device, definitions, families, consumption_key)
-            except Exception:
-                logger.exception("Could not collect metrics for device %s", device.host)
+        operational = self._operational_families()
+        for snapshot in self._device_snapshots.values():
+            if (dump := snapshot.dump) is not None:
+                for metric_type, definition in definitions.items():
+                    if (value := getattr(dump, str(metric_type), None)) is not None:
+                        labels = [str(getattr(dump, label) or "unknown") for label in definition.labels]
+                        families[metric_type].add_metric(labels, value)
+            for field_name in DEVICE_HEALTH_METRICS:
+                operational[f"tapo_device_{field_name}"].add_metric(
+                    [snapshot.host, snapshot.alias], float(getattr(snapshot, field_name))
+                )
+        operational["tapo_refresh_duration_seconds"].add_metric([], self._refresh_duration)
+        operational["tapo_refresh_in_progress"].add_metric([], float(self._refresh_in_progress))
+        operational["tapo_scrape_refresh_timeouts_total"].add_metric([], self._scrape_timeouts)
         return [
-            GaugeMetricFamily("tapo_discovered_devices", "Number of discovered Tapo devices", value=len(devices)),
+            GaugeMetricFamily(
+                "tapo_discovered_devices", "Number of discovered Tapo devices", value=self._inventory_count
+            ),
             *families.values(),
+            *operational.values(),
         ]
+
+    def _build_metrics(self) -> list[Metric]:
+        """Seed unobserved devices and build one aggregate snapshot per completed pass.
+
+        Returns
+        -------
+        list[Metric]
+            Complete metric families from cached per-device readings.
+        """
+        for device in (self.discovered_devices or {}).values():
+            self._seed_device_snapshot(device, read_measurements=True)
+        with self._metrics_lock:
+            if self._closed:
+                return []
+            self._inventory_count = len(self.discovered_devices or {})
+            self._latest_metrics = self._render_metrics()
+            self._metrics_dirty = False
+            return self._latest_metrics
 
     def _refresh_on_scrape(self) -> None:
         """Coalesce overlapping scrapes and cap their wait for device I/O."""
@@ -944,6 +1280,7 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             if self._closed:
                 return
             if self._refresh_future is None or self._refresh_future.done():
+                self._refresh_ready = threading.Event()
                 coroutine = self.update_and_collect()
                 try:
                     self._refresh_future = asyncio.run_coroutine_threadsafe(coroutine, self._asyncio_loop)
@@ -951,13 +1288,24 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
                     coroutine.close()
                     return
             future = self._refresh_future
-        try:
-            future.result(timeout=timeout)
-        except TimeoutError:
+            ready = self._refresh_ready
+        future.add_done_callback(lambda _future: ready.set())
+        self._wait_for_refresh(future, ready, timeout)
+
+    def _wait_for_refresh(self, future: Future[None], ready: threading.Event, timeout: float) -> None:
+        """Wait for healthy readings while retaining the shared full-pass operation."""
+        if not ready.wait(timeout=timeout):
             # The deadline bounds this HTTP request, not the shared refresh.
             # Cancelling the pass here would repeatedly starve later devices
             # in fleets whose total update time exceeds the scrape budget.
-            logger.warning("Scrape refresh exceeded %s seconds; returning cached metrics.", timeout)
+            with self._metrics_lock:
+                self._scrape_timeouts += 1
+                self._metrics_dirty = True
+            logger.warning("Scrape refresh exceeded %s seconds; returning available metrics.", timeout)
+            return
+        try:
+            if future.done():
+                future.result()
         except Exception:
             logger.exception("Scrape refresh failed; returning cached metrics.")
 
@@ -974,5 +1322,10 @@ class TapoPowerPlugPrometheusExporter(BasePrometheusCollector):
             self._refresh_on_scrape()
         # Copy under the lock, then release it before handing control to the caller.
         with self._metrics_lock:
+            if self._closed:
+                return
+            if self._metrics_dirty:
+                self._latest_metrics = self._render_metrics()
+                self._metrics_dirty = False
             metrics = list(self._latest_metrics)
         yield from metrics  # ruff: ignore[unnecessary-assign-before-yield]

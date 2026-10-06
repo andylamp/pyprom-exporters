@@ -314,7 +314,8 @@ def test_cached_serialization_performs_no_device_io(monkeypatch: pytest.MonkeyPa
             before = activity.calls
             measured = scalability.scrape(exporter, 2)
             assert activity.calls == before
-            assert measured["samples"] == 19
+            # Six measurements and five diagnostics per device, plus four global samples.
+            assert measured["samples"] == 3 * (6 + 5) + 4
         finally:
             await exporter.cleanup()
 

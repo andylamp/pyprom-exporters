@@ -264,9 +264,9 @@ def test_self_cancellation_propagates(concurrency: int | None) -> None:
 
 @pytest.mark.parametrize("concurrency", [None, 2])
 @pytest.mark.parametrize("return_exceptions", [False, True])
-@pytest.mark.parametrize("cancel_task", [False, True])
+@pytest.mark.parametrize("cancel_mode", ["raise", "yield", "return"])
 def test_self_cancellation_cancels_and_joins_hanging_siblings(
-    concurrency: int | None, *, return_exceptions: bool, cancel_task: bool
+    concurrency: int | None, *, return_exceptions: bool, cancel_mode: str
 ) -> None:
     """A cancelled factory must interrupt siblings without waiting for their results."""
 
@@ -276,10 +276,12 @@ def test_self_cancellation_cancels_and_joins_hanging_siblings(
 
         async def self_cancel() -> None:
             await sibling_started.wait()
-            if cancel_task:
+            if cancel_mode != "raise":
                 task = asyncio.current_task()
                 assert task is not None
                 task.cancel()
+                if cancel_mode == "return":
+                    return
                 await asyncio.sleep(0)
             raise asyncio.CancelledError
 
