@@ -30,7 +30,7 @@ from pyprom_exporters.exporters.tapo import (
 from tests.conftest import FakeDevice, make_features
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Generator, Iterable
 
     from kasa import Device
     from prometheus_client.metrics_core import Metric
@@ -76,7 +76,7 @@ def make_exporter(
 
 
 @contextmanager
-def running_loop() -> Iterator[asyncio.AbstractEventLoop]:
+def running_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     """Run device operations independently of synchronous scrape callers.
 
     Yields
