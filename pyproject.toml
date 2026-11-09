@@ -21,7 +21,9 @@ docs = [
 ]
 
 [dependency-groups]
+automation = ["PyYAML>=6.0.3"]
 dev = [
+    { include-group = "automation" },
     "ruff>=0.16.9",
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
@@ -100,4 +102,4 @@ addopts = ["-n", "auto", "--maxprocesses=4", "--dist=worksteal"]
 python-version = "3.11"
 
 [tool.ty.src]
-include = ["src", "tests", "benchmarks", "docs/conf.py"]
+include = ["src", "tests", "benchmarks", "docs/conf.py", ".github/scripts"]
