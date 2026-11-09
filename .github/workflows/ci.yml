@@ -1,8 +1,7 @@
-name: CI
+name: Code quality and tests
 
 on:
   push:
-    branches: ["main"]
   pull_request:
   workflow_dispatch:
 
@@ -15,12 +14,13 @@ concurrency:
 
 jobs:
   lint:
+    name: Lint, formatting, types and documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Setup uv and Python
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.12.19"
           python-version: "3.14"
@@ -32,6 +32,7 @@ jobs:
         run: uv run --locked docs
 
   test:
+    name: Tests and coverage (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,7 +42,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Setup uv and Python
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.12.19"
           python-version: ${{ matrix.python-version }}
@@ -60,44 +61,65 @@ jobs:
             coverage.svg
 
   update-coverage-badge:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Publish coverage badge
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: [lint, test, build]
     runs-on: ubuntu-latest
+    concurrency:
+      group: coverage-badge-publication
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
-      - name: Checkout current main
-        uses: actions/checkout@v7
-        with:
-          ref: main
+      # Only artifacts from this successful main CI run are published, never PR artifacts.
       - name: Download coverage badge
         uses: actions/download-artifact@v8
         with:
           name: coverage-3.14
-          path: coverage-artifact
-      - name: Update badge for the tested revision
+          path: ${{ runner.temp }}/coverage-artifact
+      - name: Publish the badge for the tested revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+          # The dedicated branch is initialized separately; this job updates one fixed file.
+          gh api "repos/$GH_REPO/contents/coverage.svg?ref=coverage-badges" \
+            > "$RUNNER_TEMP/current-coverage-badge.json"
+          jq -e '.type == "file" and .encoding == "base64" and (.sha | type == "string")' \
+            "$RUNNER_TEMP/current-coverage-badge.json" > /dev/null
+          jq --rawfile badge "$RUNNER_TEMP/coverage-artifact/coverage.svg" \
+            --arg message "Update coverage badge for $GITHUB_SHA (run $GITHUB_RUN_ID)" '
+            if (.content | gsub("\n"; "")) == ($badge | @base64) then empty
+            else {
+              branch: "coverage-badges",
+              message: $message,
+              sha: .sha,
+              content: ($badge | @base64)
+            } end
+          ' "$RUNNER_TEMP/current-coverage-badge.json" > "$RUNNER_TEMP/coverage-badge-update.json"
+          if [[ ! -s "$RUNNER_TEMP/coverage-badge-update.json" ]]; then
+            echo "Coverage badge is unchanged; nothing to publish."
+            exit 0
+          fi
+          if [[ $(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha') != "$GITHUB_SHA" ]]; then
             echo "Main has advanced; skipping the outdated coverage badge."
             exit 0
           fi
-          cp coverage-artifact/coverage.svg coverage.svg
-          git add coverage.svg
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m '[skip ci] Update coverage badge'
-          git push origin HEAD:main
+          # The expected file SHA rejects concurrent writes; main is never changed or bypassed.
+          gh api --method PUT "repos/$GH_REPO/contents/coverage.svg" \
+            --input "$RUNNER_TEMP/coverage-badge-update.json" --silent
 
   build:
+    name: Build and smoke tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Setup uv and Python
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.12.19"
           python-version: "3.14"

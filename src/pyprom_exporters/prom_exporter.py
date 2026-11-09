@@ -141,7 +141,8 @@ def load_app_config(config_path: str) -> tuple[PromExporterConfig, DictConfig | 
 
     # Resolve credentials after merging so custom environment keys take effect.
     schema.exporters.tapo.discovery_options.credentials = None
-    cfg = OmegaConf.merge(schema, config_from_file)
+    # Both inputs are mappings, so merging cannot produce a list or tuple configuration.
+    cfg = cast("DictConfig", OmegaConf.merge(schema, config_from_file))
     # Empty option maps explicitly disable families/metrics rather than restoring defaults.
     for key in ("supported_device_families", "per_device_family_metrics.plug"):
         path = f"exporters.tapo.{key}"

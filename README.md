@@ -1,8 +1,8 @@
 # Python Prometheus Exporters for IoT Devices
 
-[![Linters](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml/badge.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
+[![CI](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml/badge.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
 [![Release](https://github.com/andylamp/pyprom-exporters/actions/workflows/release.yml/badge.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/release.yml)
-[![Coverage](https://raw.githubusercontent.com/andylamp/pyprom-exporters/main/coverage.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
+[![Coverage](https://raw.githubusercontent.com/andylamp/pyprom-exporters/coverage-badges/coverage.svg)](https://github.com/andylamp/pyprom-exporters/actions/workflows/ci.yml)
 
 Python Prometheus Exporters (`pyprom-exporters`) is a small Python package that exposes Prometheus
 metrics for IoT / smart-home
@@ -280,6 +280,47 @@ serial debugging. Worker startup can outweigh parallelism benefits for small tes
 CI tests Python 3.11, 3.12, 3.13, and 3.14. Ruff and ty target the minimum supported version, 3.11.
 Sphinx 9.0.4 is used on Python 3.11; Python 3.12+ uses Sphinx 9.1 or later.
 
+The **Code quality and tests** workflow runs on pushes to every branch, pull requests, and manual dispatch.
+Lint/documentation, the four Python test/coverage jobs, and wheel/container smoke tests run in parallel.
+
+### Dependency updates and automatic merging
+
+[Dependabot](.github/dependabot.yml) groups Python dependencies, GitHub Actions, Docker images and prek hooks into
+one weekly version-update PR, with at most one such PR open. Transitive Python dependencies are included.
+Python and GitHub Actions security updates are grouped separately; GitHub cannot combine security updates across
+all ecosystems into the version-update PR.
+
+[Merge verified Dependabot updates](.github/workflows/dependabot-merge.yaml) merges a grouped PR only when every update
+is a verified stable patch or minor increase and all six required CI jobs succeed. Major updates, prereleases,
+downgrades, human-authored changes, and ambiguous versions remain open for manual review. One ineligible update keeps
+the entire group open. The policy checks signed Dependabot commit metadata and old/new version descriptions;
+missing update types for Docker updates do not hide major changes. Four-part versions, image variants and digest-only
+changes remain manual when their patch/minor classification cannot be established by the strict version parser.
+
+The workflow executes only trusted default-branch policy code, with an isolated locked `automation` dependency group.
+It checks the current PR head against the successful CI run and merges that exact commit; it does not leave a pending
+auto-merge authorization that a later major update could inherit. PR code, caches and artifacts are never executed by
+the merge workflow. No personal token or automatic PR approval is needed.
+
+After merging the workflow into the default branch, repository administrators should configure
+**Settings → Branches → Branch protection rules** for `main`:
+
+- Require up-to-date branches and successful status checks before merging, including administrator merges.
+- Require **Lint, formatting, types and documentation**, each **Tests and coverage (Python 3.11–3.14)** job, and
+  **Build and smoke tests**, with GitHub Actions as the expected source.
+- Keep squash merging and GitHub Actions enabled. Do not require **Publish coverage badge**, which only runs on `main`.
+
+These repository settings are not copied by a clone or fork. Keep the protection rule and the merge workflow's check
+names aligned if CI jobs are renamed. GitHub's **Allow auto-merge** setting is optional for this workflow; enabling that
+setting alone does not opt every Dependabot PR into merging. Failed or unknown updates stay open with a policy reason
+in the workflow logs; a new successful CI run re-evaluates the current head.
+
+GitHub suppresses push-triggered workflows for merges made with `GITHUB_TOKEN`, so the merge workflow explicitly
+[dispatches CI on `main`][workflow-dispatch] after a successful merge. This checks the merged revision and publishes
+its coverage badge without a personal token. Releases retain their separate `release` branch/manual workflow.
+
+[workflow-dispatch]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+
 ### Performance diagnostics
 
 The offline benchmark in `src/pyprom_exporters/benchmarks/scalability.py` measures discovery,
@@ -342,8 +383,14 @@ make coverage
 
 SlipCover currently supports Python 3.11 through 3.14 in this project. Its dependency is conditional
 so the rest of the development environment remains installable on newer Python versions.
-CI uploads coverage reports for each tested Python version and updates the checked-in badge only
-after successful checks on `main`.
+CI uploads coverage reports for each tested Python version. After successful push or manually dispatched checks on
+`main`, it publishes the Python 3.14 badge to the separate `coverage-badges` branch used by the README.
+The publisher skips stale results and changes only that branch's `coverage.svg`; it never commits to protected `main`.
+The checked-in `coverage.svg` remains a local `make coverage` output, not the automatically published badge.
+
+For a fork, initialize a `coverage-badges` branch containing `coverage.svg` before the first publication; creating it
+from `main` through GitHub's branch selector is sufficient. The publisher deliberately requires the branch and file to
+exist, and uses the expected file revision to reject concurrent writes. No force push or branch-protection bypass is used.
 
 Pytest can report `PytestAssertRewriteWarning` for the already imported `slipcover` package.
 This concerns assertion rewriting in the tool itself and does not affect application coverage.

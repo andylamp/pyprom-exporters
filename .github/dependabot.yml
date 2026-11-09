@@ -1,21 +1,42 @@
 version: 2
 
-# Combine all version updates across ecosystems into one weekly pull request.
+# One shared version-update PR for Python dependencies, actions, images and hooks.
+# GitHub requires security updates to use separate, per-ecosystem groups.
 multi-ecosystem-groups:
   dependencies:
     schedule:
-      interval: "weekly"
+      interval: weekly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: chore(deps)
 
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: uv
+    directory: /
     patterns: ["*"]
-    multi-ecosystem-group: "dependencies"
-  - package-ecosystem: "uv"
-    directory: "/"
+    multi-ecosystem-group: dependencies
+    # Include transitive lockfile dependencies as well as direct dependencies.
+    allow:
+      - dependency-type: all
+    groups:
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
     patterns: ["*"]
-    multi-ecosystem-group: "dependencies"
-  - package-ecosystem: "docker"
-    directory: "/"
+    multi-ecosystem-group: dependencies
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+  # Docker images and hooks share the version-update group.
+  - package-ecosystem: docker
+    directory: /
     patterns: ["*"]
-    multi-ecosystem-group: "dependencies"
+    multi-ecosystem-group: dependencies
+  # prek uses the same hook manifest format as pre-commit.
+  - package-ecosystem: pre-commit
+    directory: /
+    patterns: ["*"]
+    multi-ecosystem-group: dependencies
